@@ -1,0 +1,362 @@
+[
+  {
+    "asset_id": "PUMP-001",
+    "asset_name": "Primary Cooling Feed Pump",
+    "manufacturer": "Flowserve",
+    "model_number": "PVXM 6x8-15",
+    "location": "Plant A / Line 1",
+    "install_date": "2007-03-15",
+    "expected_lifespan_years": 20,
+
+    "rated_flow_rate_gpm": 500,
+    "actual_flow_rate_gpm": 380,
+    "operating_hours_per_day": 22,
+    "total_runtime_hours": 152400,
+
+    "condition_score": 3,
+    "vibration_level": "Critical",
+    "temperature_celsius": 87,
+    "seal_condition": "Leaking",
+    "bearing_condition": "Failed",
+
+    "last_maintenance_date": "2025-12-15",
+    "maintenance_frequency_days": 90,
+    "maintenance_cost_last_year": 8500,
+    "maintenance_cost_trend": "Increasing",
+    "number_of_failures_last_3yr": 5,
+
+    "score_criticality": 8.11,
+    "score_condition": 9.0,
+    "score_failure_probability": 9.0,
+    "score_downtime_impact": 7.22,
+    "score_maintenance_cost_trend": 9.0,
+
+    "age_years": 19.26,
+    "usage_intensity_pct": 76.0,
+    "days_since_maintenance": 185
+  },
+  {
+    "asset_id": "PUMP-002",
+    "asset_name": "Boiler Feed Pump B",
+    "manufacturer": "Grundfos",
+    "model_number": "NK 65-315/332",
+    "location": "Plant B / Line 3",
+    "install_date": "2023-08-20",
+    "expected_lifespan_years": 20,
+
+    "rated_flow_rate_gpm": 350,
+    "actual_flow_rate_gpm": 320,
+    "operating_hours_per_day": 16,
+    "total_runtime_hours": 16400,
+
+    "condition_score": 9,
+    "vibration_level": "Normal",
+    "temperature_celsius": 52,
+    "seal_condition": "Good",
+    "bearing_condition": "Good",
+
+    "last_maintenance_date": "2026-05-01",
+    "maintenance_frequency_days": 180,
+    "maintenance_cost_last_year": 800,
+    "maintenance_cost_trend": "Stable",
+    "number_of_failures_last_3yr": 0,
+
+    "score_criticality": 1.89,
+    "score_condition": 1.0,
+    "score_failure_probability": 1.0,
+    "score_downtime_impact": 1.89,
+    "score_maintenance_cost_trend": 3.67,
+
+    "age_years": 2.83,
+    "usage_intensity_pct": 91.4,
+    "days_since_maintenance": 48
+  },
+  {
+    "asset_id": "PUMP-003",
+    "asset_name": "Process Water Circulation Pump",
+    "manufacturer": "KSB",
+    "model_number": "Etanorm G 080-200",
+    "location": "Plant A / Line 2",
+    "install_date": "2013-05-10",
+    "expected_lifespan_years": 18,
+
+    "rated_flow_rate_gpm": 750,
+    "actual_flow_rate_gpm": 600,
+    "operating_hours_per_day": 20,
+    "total_runtime_hours": 95000,
+
+    "condition_score": 5,
+    "vibration_level": "High",
+    "temperature_celsius": 74,
+    "seal_condition": "Worn",
+    "bearing_condition": "Worn",
+
+    "last_maintenance_date": "2026-01-20",
+    "maintenance_frequency_days": 120,
+    "maintenance_cost_last_year": 4500,
+    "maintenance_cost_trend": "Increasing",
+    "number_of_failures_last_3yr": 3,
+
+    "score_criticality": 6.33,
+    "score_condition": 7.22,
+    "score_failure_probability": 6.33,
+    "score_downtime_impact": 5.44,
+    "score_maintenance_cost_trend": 8.11,
+
+    "age_years": 13.11,
+    "usage_intensity_pct": 80.0,
+    "days_since_maintenance": 149
+  },
+  {
+    "asset_id": "PUMP-004",
+    "asset_name": "Condensate Extraction Pump",
+    "manufacturer": "ITT Goulds",
+    "model_number": "3196 LTX 1x1.5-6",
+    "location": "Plant C / Line 1",
+    "install_date": "2018-11-05",
+    "expected_lifespan_years": 20,
+
+    "rated_flow_rate_gpm": 450,
+    "actual_flow_rate_gpm": 420,
+    "operating_hours_per_day": 18,
+    "total_runtime_hours": 49700,
+
+    "condition_score": 7,
+    "vibration_level": "Normal",
+    "temperature_celsius": 58,
+    "seal_condition": "Good",
+    "bearing_condition": "Good",
+
+    "last_maintenance_date": "2026-03-15",
+    "maintenance_frequency_days": 120,
+    "maintenance_cost_last_year": 2200,
+    "maintenance_cost_trend": "Stable",
+    "number_of_failures_last_3yr": 1,
+
+    "score_criticality": 3.67,
+    "score_condition": 2.78,
+    "score_failure_probability": 2.78,
+    "score_downtime_impact": 3.67,
+    "score_maintenance_cost_trend": 4.56,
+
+    "age_years": 7.62,
+    "usage_intensity_pct": 93.3,
+    "days_since_maintenance": 95
+  },
+  {
+    "asset_id": "PUMP-005",
+    "asset_name": "Main Transfer Pump",
+    "manufacturer": "Sulzer",
+    "model_number": "CPT-M 200-400A",
+    "location": "Plant A / Line 3",
+    "install_date": "2015-07-22",
+    "expected_lifespan_years": 15,
+
+    "rated_flow_rate_gpm": 600,
+    "actual_flow_rate_gpm": 480,
+    "operating_hours_per_day": 21,
+    "total_runtime_hours": 83500,
+
+    "condition_score": 4,
+    "vibration_level": "High",
+    "temperature_celsius": 91,
+    "seal_condition": "Worn",
+    "bearing_condition": "Failed",
+
+    "last_maintenance_date": "2025-10-05",
+    "maintenance_frequency_days": 90,
+    "maintenance_cost_last_year": 7200,
+    "maintenance_cost_trend": "Increasing",
+    "number_of_failures_last_3yr": 4,
+
+    "score_criticality": 7.22,
+    "score_condition": 9.0,
+    "score_failure_probability": 7.22,
+    "score_downtime_impact": 8.11,
+    "score_maintenance_cost_trend": 9.0,
+
+    "age_years": 10.91,
+    "usage_intensity_pct": 80.0,
+    "days_since_maintenance": 256
+  },
+  {
+    "asset_id": "PUMP-006",
+    "asset_name": "Chemical Dosing Pump",
+    "manufacturer": "Armstrong",
+    "model_number": "4300 Series 4x4-12",
+    "location": "Plant B / Line 1",
+    "install_date": "2017-04-30",
+    "expected_lifespan_years": 20,
+
+    "rated_flow_rate_gpm": 400,
+    "actual_flow_rate_gpm": 350,
+    "operating_hours_per_day": 16,
+    "total_runtime_hours": 52700,
+
+    "condition_score": 6,
+    "vibration_level": "Normal",
+    "temperature_celsius": 63,
+    "seal_condition": "Good",
+    "bearing_condition": "Worn",
+
+    "last_maintenance_date": "2026-02-10",
+    "maintenance_frequency_days": 150,
+    "maintenance_cost_last_year": 3100,
+    "maintenance_cost_trend": "Stable",
+    "number_of_failures_last_3yr": 2,
+
+    "score_criticality": 4.56,
+    "score_condition": 5.44,
+    "score_failure_probability": 4.56,
+    "score_downtime_impact": 4.56,
+    "score_maintenance_cost_trend": 5.44,
+
+    "age_years": 9.13,
+    "usage_intensity_pct": 87.5,
+    "days_since_maintenance": 128
+  },
+  {
+    "asset_id": "PUMP-007",
+    "asset_name": "HVAC Chilled Water Pump",
+    "manufacturer": "Pentair",
+    "model_number": "Aurora 342-2x3-10",
+    "location": "Plant C / Line 2",
+    "install_date": "2021-09-15",
+    "expected_lifespan_years": 20,
+
+    "rated_flow_rate_gpm": 300,
+    "actual_flow_rate_gpm": 280,
+    "operating_hours_per_day": 14,
+    "total_runtime_hours": 24200,
+
+    "condition_score": 8,
+    "vibration_level": "Normal",
+    "temperature_celsius": 49,
+    "seal_condition": "Good",
+    "bearing_condition": "Good",
+
+    "last_maintenance_date": "2026-04-20",
+    "maintenance_frequency_days": 180,
+    "maintenance_cost_last_year": 1500,
+    "maintenance_cost_trend": "Stable",
+    "number_of_failures_last_3yr": 0,
+
+    "score_criticality": 2.78,
+    "score_condition": 2.78,
+    "score_failure_probability": 1.0,
+    "score_downtime_impact": 2.78,
+    "score_maintenance_cost_trend": 4.56,
+
+    "age_years": 4.76,
+    "usage_intensity_pct": 93.3,
+    "days_since_maintenance": 59
+  },
+  {
+    "asset_id": "PUMP-008",
+    "asset_name": "Effluent Transfer Pump",
+    "manufacturer": "CIRCOR",
+    "model_number": "ME-3.5x3x8",
+    "location": "Plant A / Line 4",
+    "install_date": "2010-02-18",
+    "expected_lifespan_years": 20,
+
+    "rated_flow_rate_gpm": 550,
+    "actual_flow_rate_gpm": 430,
+    "operating_hours_per_day": 20,
+    "total_runtime_hours": 118600,
+
+    "condition_score": 5,
+    "vibration_level": "High",
+    "temperature_celsius": 78,
+    "seal_condition": "Worn",
+    "bearing_condition": "Good",
+
+    "last_maintenance_date": "2026-01-05",
+    "maintenance_frequency_days": 120,
+    "maintenance_cost_last_year": 3800,
+    "maintenance_cost_trend": "Increasing",
+    "number_of_failures_last_3yr": 2,
+
+    "score_criticality": 5.44,
+    "score_condition": 6.33,
+    "score_failure_probability": 6.33,
+    "score_downtime_impact": 5.44,
+    "score_maintenance_cost_trend": 8.11,
+
+    "age_years": 16.33,
+    "usage_intensity_pct": 78.2,
+    "days_since_maintenance": 164
+  },
+  {
+    "asset_id": "PUMP-009",
+    "asset_name": "Raw Water Intake Pump",
+    "manufacturer": "Flowserve",
+    "model_number": "IDP 10x12-16",
+    "location": "Plant B / Line 2",
+    "install_date": "2005-11-08",
+    "expected_lifespan_years": 20,
+
+    "rated_flow_rate_gpm": 800,
+    "actual_flow_rate_gpm": 520,
+    "operating_hours_per_day": 23,
+    "total_runtime_hours": 172800,
+
+    "condition_score": 2,
+    "vibration_level": "Critical",
+    "temperature_celsius": 96,
+    "seal_condition": "Leaking",
+    "bearing_condition": "Failed",
+
+    "last_maintenance_date": "2025-09-20",
+    "maintenance_frequency_days": 60,
+    "maintenance_cost_last_year": 12000,
+    "maintenance_cost_trend": "Increasing",
+    "number_of_failures_last_3yr": 6,
+
+    "score_criticality": 9.0,
+    "score_condition": 9.0,
+    "score_failure_probability": 9.0,
+    "score_downtime_impact": 9.0,
+    "score_maintenance_cost_trend": 9.0,
+
+    "age_years": 20.61,
+    "usage_intensity_pct": 65.0,
+    "days_since_maintenance": 271
+  },
+  {
+    "asset_id": "PUMP-010",
+    "asset_name": "Cooling Tower Circulating Pump",
+    "manufacturer": "KSB",
+    "model_number": "Mega 100-315",
+    "location": "Plant C / Line 3",
+    "install_date": "2016-06-25",
+    "expected_lifespan_years": 18,
+
+    "rated_flow_rate_gpm": 500,
+    "actual_flow_rate_gpm": 460,
+    "operating_hours_per_day": 18,
+    "total_runtime_hours": 65500,
+
+    "condition_score": 6,
+    "vibration_level": "Normal",
+    "temperature_celsius": 65,
+    "seal_condition": "Worn",
+    "bearing_condition": "Good",
+
+    "last_maintenance_date": "2026-03-01",
+    "maintenance_frequency_days": 120,
+    "maintenance_cost_last_year": 2700,
+    "maintenance_cost_trend": "Stable",
+    "number_of_failures_last_3yr": 2,
+
+    "score_criticality": 4.56,
+    "score_condition": 5.44,
+    "score_failure_probability": 4.56,
+    "score_downtime_impact": 4.56,
+    "score_maintenance_cost_trend": 4.56,
+
+    "age_years": 9.98,
+    "usage_intensity_pct": 92.0,
+    "days_since_maintenance": 109
+  }
+]
