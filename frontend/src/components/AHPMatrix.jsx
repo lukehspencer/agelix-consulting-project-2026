@@ -22,23 +22,23 @@ const N = 5
 // Full Saaty scale: integers 1–9 and their reciprocals.
 // Values are stored as exact floats; labels are display-only.
 const SAATY_OPTIONS = [
-  { label: '9 — Extreme',         value: 9       },
+  { label: '9  Extreme',          value: 9       },
   { label: '8',                   value: 8       },
-  { label: '7 — Very Strong',     value: 7       },
+  { label: '7  Very Strong',      value: 7       },
   { label: '6',                   value: 6       },
-  { label: '5 — Strong',          value: 5       },
+  { label: '5  Strong',           value: 5       },
   { label: '4',                   value: 4       },
-  { label: '3 — Moderate',        value: 3       },
+  { label: '3  Moderate',         value: 3       },
   { label: '2',                   value: 2       },
-  { label: '1 — Equal',           value: 1       },
+  { label: '1  Equal',            value: 1       },
   { label: '1/2',                 value: 1 / 2   },
-  { label: '1/3 — Moderate⁻¹',   value: 1 / 3   },
+  { label: '1/3  Moderate⁻¹',    value: 1 / 3   },
   { label: '1/4',                 value: 1 / 4   },
-  { label: '1/5 — Strong⁻¹',     value: 1 / 5   },
+  { label: '1/5  Strong⁻¹',      value: 1 / 5   },
   { label: '1/6',                 value: 1 / 6   },
-  { label: '1/7 — V. Strong⁻¹',  value: 1 / 7   },
+  { label: '1/7  V. Strong⁻¹',   value: 1 / 7   },
   { label: '1/8',                 value: 1 / 8   },
-  { label: '1/9 — Extreme⁻¹',    value: 1 / 9   },
+  { label: '1/9  Extreme⁻¹',     value: 1 / 9   },
 ]
 
 function initMatrix() {
@@ -77,7 +77,7 @@ export default function AHPMatrix({ onWeightsUpdate }) {
       <h2 className="section-title">AHP Pairwise Comparison Matrix</h2>
       <p className="section-sub">
         Rate how much more important the <em>row</em> criterion is than the{' '}
-        <em>column</em>. Edit the upper triangle — reciprocals fill automatically.
+        <em>column</em>. Edit the upper triangle. Reciprocals fill automatically.
       </p>
 
       <div className="matrix-scroll">
@@ -171,12 +171,12 @@ function CRBanner({ cr, valid }) {
       <span>
         {valid ? (
           <>
-            <strong>Consistent</strong> — CR = {cr.toFixed(4)}&ensp;
+            <strong>Consistent</strong> CR = {cr.toFixed(4)}&ensp;
             <span className="cr-threshold">(threshold ≤ 0.10)</span>
           </>
         ) : (
           <>
-            <strong>Inconsistent matrix</strong> — CR = {cr.toFixed(4)} exceeds 0.10.
+            <strong>Inconsistent matrix</strong> CR = {cr.toFixed(4)} exceeds 0.10.
             Revise your pairwise comparisons to reduce contradictions before using
             these weights.
           </>

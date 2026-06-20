@@ -1,22 +1,19 @@
-import { useState } from 'react'
-import AHPMatrix from './components/AHPMatrix'
+import Dashboard from './components/Dashboard'
 
 export default function App() {
-  const [ahpResult, setAhpResult] = useState(null)
-
   return (
     <div className="app">
       <header className="app-header">
         <div className="header-inner">
           <h1>Asset Risk Dashboard</h1>
           <p className="header-sub">
-            Agelix Consulting — Centrifugal Pump Asset Management
+            Agelix Consulting
           </p>
         </div>
       </header>
 
       <main className="app-main">
-        <AHPMatrix onWeightsUpdate={setAhpResult} />
+        <Dashboard />
       </main>
     </div>
   )

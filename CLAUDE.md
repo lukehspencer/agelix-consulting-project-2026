@@ -53,19 +53,20 @@ asset-risk-dashboard/
 │   └── ml_rul_model.py                # ML model integration (Phase 2)
 │
 ├── data/
-│   ├── pumps.json                     # 10 mock centrifugal pump assets (29 variables each)
+│   ├── pumps.json                     # 5 mock centrifugal pump assets (29 variables each)
 │   └── data_schema.py                 # Variable definitions and types
 │
 ├── frontend/                          # React frontend
 │   └── src/
 │       ├── App.jsx
 │       ├── components/
-│       │   ├── Dashboard.jsx
-│       │   ├── AssetRegistry.jsx
+│       │   ├── Dashboard.jsx          # Orchestrates all components + KPI cards + history log
+│       │   ├── AssetRegistry.jsx      # Pump table with expandable detail rows
 │       │   ├── AHPMatrix.jsx          # 5×5 pairwise matrix UI
-│       │   ├── WeightDisplay.jsx      # AHP weights chart
-│       │   ├── RiskRanking.jsx        # Asset risk scores ranked
-│       │   └── RiskScatterPlot.jsx    # Risk vs RUL scatter (Phase 2 ready)
+│       │   ├── WeightDisplay.jsx      # AHP weight distribution bar chart
+│       │   ├── RiskRanking.jsx        # Ranked risk table + color-coded bar chart
+│       │   ├── CriteriaContribution.jsx # Stacked bar chart of weighted criterion contributions
+│       │   └── RiskScatterPlot.jsx    # Risk vs Condition scatter plot with quadrants
 │       ├── hooks/
 │       │   ├── useAHP.js
 │       │   └── useRiskScores.js
@@ -280,6 +281,10 @@ GET /ahp/assets?weights=0.35&weights=0.25&weights=0.2&weights=0.12&weights=0.08
 Defaults to equal weights `[0.2, 0.2, 0.2, 0.2, 0.2]` when no params are supplied,
 so the endpoint works on first load before the user has submitted a matrix.
 
+Response includes **all 29 pump fields** plus computed risk data per pump:
+`risk_factor`, `weights`, `scores`, `weighted_scores`, `criteria`.
+Results are sorted descending by `risk_factor`.
+
 ### POST /ahp/score-asset — C1 and C4 field names
 C1 and C4 are manual inputs. The request body must use:
 - `criticality_raw` (float, 1–10) for C1
@@ -309,14 +314,47 @@ React Dashboard       →   AHP matrix UI, weight chart, risk ranking (live upda
 
 ---
 
+## Frontend State Architecture
+
+All shared state lives in `Dashboard.jsx`. No component holds its own copy of weights.
+
+```
+AHPMatrix (useAHP hook → POST /ahp/calculate-weights)
+    ↓ onWeightsUpdate callback
+Dashboard.ahpResult state  →  extracts weights
+    ↓
+useRiskScores(weights)     →  GET /ahp/assets?weights=...  →  assets[]
+    ↓ passed as props
+KPI Cards (inline)         ←  ahpResult + assets
+WeightDisplay              ←  weights
+AssetRegistry              ←  assets
+RiskRanking                ←  assets
+CriteriaContribution       ←  assets
+RiskScatterPlot            ←  assets
+Score History Log (inline) ←  ahpResult + assets (React state only, no API)
+```
+
+### Dashboard Layout (top to bottom)
+1. AHPMatrix (pairwise comparison input + Calculate Weights button)
+2. KPI Summary Cards (avg risk, highest risk pump, high-risk count, CR status)
+3. WeightDisplay (Recharts bar chart of criterion weights)
+4. AssetRegistry (table with expandable detail rows for all 29 variables)
+5. RiskRanking (ranked table + color-coded bar chart: green 1-3, yellow 4-6, red 7-9)
+6. CriteriaContribution (stacked bar chart of w*s per criterion per pump)
+7. RiskScatterPlot (condition vs risk scatter with quadrant reference lines)
+8. Score History Log (appends a row per matrix submission; React state only)
+
+---
+
 ## Dynamic Behavior
 
-When any pairwise comparison value changes in the UI:
+When the user submits a new pairwise matrix:
 1. Matrix updates → reciprocals recalculate
-2. Weights recalculate
-3. CR revalidates
-4. All 10 pump risk scores update
-5. Risk ranking re-renders
+2. Weights recalculate via API
+3. CR revalidates and displays
+4. All 5 pump risk scores update
+5. Every component re-renders simultaneously with new scores
+6. History log appends a new entry with timestamp, weights, pump scores, and CR
 
 No page refresh required. Everything updates in real time.
 
@@ -327,14 +365,13 @@ No page refresh required. Everything updates in real time.
 Build in this exact sequence to avoid dependency issues:
 
 ```
-1. data/pumps.json              ✓ complete
+1. data/pumps.json              ✓ complete (5 pumps)
 2. ahp/ahp_constants.py         ✓ complete
 3. ahp/criteria_scoring.py      ✓ complete
 4. ahp/ahp_engine.py            ✓ complete
 5. ahp/risk_calculator.py       ✓ complete
 6. ahp/api.py                   ✓ complete
-7. frontend/ (React UI last)    ✓ AHPMatrix.jsx complete — WeightDisplay,
-                                  RiskRanking, Dashboard in progress
+7. frontend/ (React UI last)    ✓ complete — all components built and wired
 ```
 
 ### Dev servers
@@ -380,3 +417,4 @@ Do not collapse weights into a single scalar or discard the per-criterion weight
 - Higher score = higher risk across all criteria (consistent direction)
 - CR > 0.10 must surface a warning to the user — never silently proceed
 - `clamp()` and `convert_to_saaty()` live in `criteria_scoring.py` and are imported where needed
+- No em dashes in the UI (use periods, commas, or spaces instead)

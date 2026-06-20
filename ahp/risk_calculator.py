@@ -45,8 +45,7 @@ def rank_assets(weights: list[float], pumps: list[dict]) -> list[dict]:
         scores = [pump[key] for key in _SCORE_KEYS]
         risk = compute_risk_factor(weights, scores)
         results.append({
-            "asset_id": pump["asset_id"],
-            "asset_name": pump["asset_name"],
+            **pump,
             "risk_factor": risk["risk_factor"],
             "weights": list(weights),
             "scores": scores,
