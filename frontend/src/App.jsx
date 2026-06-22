@@ -5,7 +5,7 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="header-inner">
-          <h1>Asset Risk Dashboard</h1>
+          <h1>Asset Management Dashboard</h1>
           <p className="header-sub">
             Agelix Consulting
           </p>

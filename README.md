@@ -1,10 +1,12 @@
-# Asset Risk Dashboard — Dynamic AHP Module
+# Asset Management Dashboard — Dynamic AHP Module
 
-An asset risk prioritisation dashboard for industrial centrifugal pump assets, built as an internship project for **Agelix Consulting** to extend the *Assets Maestro* platform.
+An asset management dashboard for industrial centrifugal pump assets, built as an internship project for **Agelix Consulting** to extend the *Assets Maestro* platform.
 
 ## What it does
 
-Users define relative importance weights across five risk criteria using an AHP (Analytic Hierarchy Process) pairwise comparison matrix. The system validates the matrix for consistency (CR ≤ 0.10), derives the weight vector, and applies it to 10 centrifugal pump assets to produce a live risk ranking.
+Users define relative importance weights across five risk criteria using an AHP (Analytic Hierarchy Process) pairwise comparison matrix. The system validates the matrix for consistency (CR ≤ 0.10), derives the weight vector, and applies it to centrifugal pump assets to produce a live risk ranking.
+
+The dashboard ships with 5 default pump assets. Users can also upload their own pump data (CSV or JSON) to replace the default dataset. All scores, charts, and rankings update in real time when weights or data change.
 
 **Criteria:** Criticality · Condition · Failure Probability · Downtime Impact · Maintenance Cost Trend
 
@@ -79,6 +81,22 @@ The Vite dev server proxies all `/ahp/*` requests to `http://localhost:8000`, so
 
 ---
 
+## Dashboard Features
+
+| Feature | Description |
+|---|---|
+| AHP Matrix | 5x5 pairwise comparison input with Saaty scale dropdowns and auto-reciprocals |
+| Data Upload | Upload custom pump data (CSV/JSON) with full validation, or use default dataset |
+| KPI Cards | Average risk score, highest risk pump, high-risk count, CR status |
+| Weight Distribution | Recharts bar chart of criterion weights after matrix submission |
+| Asset Registry | Table of all pumps with expandable detail rows showing all 29 variables |
+| Risk Ranking | Ranked table + color-coded bar chart (green 1-3, yellow 4-6, red 7-9) |
+| Criteria Contribution | Stacked bar chart showing weighted criterion breakdown per pump |
+| Risk vs Condition | Scatter plot with quadrant reference lines and colored regions |
+| Score History Log | Tracks each matrix submission with weights, pump scores, and CR |
+
+---
+
 ## Running tests
 
 ```bash
@@ -93,8 +111,8 @@ Base URL: `http://localhost:8000`
 
 | Method | Route | Description |
 |---|---|---|
-| `POST` | `/ahp/calculate-weights` | 5×5 pairwise matrix → weights, λ_max, CI, CR, valid flag |
-| `POST` | `/ahp/score-asset` | Pump variables → C1–C5 Saaty scores |
+| `POST` | `/ahp/calculate-weights` | 5x5 pairwise matrix → weights, lambda_max, CI, CR, valid flag |
+| `POST` | `/ahp/score-asset` | Pump variables → C1-C5 Saaty scores |
 | `POST` | `/ahp/risk-factor` | weights + scores → risk factor + weighted scores |
 | `GET` | `/ahp/assets` | All pumps ranked by risk factor (pass `?weights=` query params) |
 
@@ -129,27 +147,38 @@ curl "http://localhost:8000/ahp/assets?weights=0.35&weights=0.25&weights=0.2&wei
 ```
 agelix-consulting-project-2026/
 ├── ahp/
-│   ├── ahp_constants.py      # RI values, CR threshold, criteria names, Saaty scale
-│   ├── criteria_scoring.py   # C1–C5 scoring functions, clamp(), convert_to_saaty()
-│   ├── ahp_engine.py         # Matrix normalisation, weight derivation, CR computation
-│   ├── risk_calculator.py    # Dot product risk factor, ranked asset list
-│   └── api.py                # FastAPI application and endpoints
+│   ├── ahp_constants.py       # RI values, CR threshold, criteria names, Saaty scale
+│   ├── criteria_scoring.py    # C1-C5 scoring functions, clamp(), convert_to_saaty()
+│   ├── ahp_engine.py          # Matrix normalisation, weight derivation, CR computation
+│   ├── risk_calculator.py     # Dot product risk factor, ranked asset list
+│   └── api.py                 # FastAPI application and endpoints
 ├── data/
-│   └── pumps.json            # 10 mock centrifugal pump assets (29 variables each)
+│   └── pumps.json             # 5 mock centrifugal pump assets (29 variables each)
 ├── frontend/
 │   ├── package.json
-│   ├── vite.config.js        # Vite + API proxy config
+│   ├── vite.config.js         # Vite + API proxy config
 │   └── src/
 │       ├── App.jsx
 │       ├── components/
-│       │   └── AHPMatrix.jsx # 5×5 pairwise matrix UI with CR validation
-│       └── hooks/
-│           └── useAHP.js     # API hook for /ahp/calculate-weights
+│       │   ├── Dashboard.jsx          # Orchestrates all components + state management
+│       │   ├── AHPMatrix.jsx          # 5x5 pairwise matrix UI with CR validation
+│       │   ├── DataUpload.jsx         # CSV/JSON upload with validation + template download
+│       │   ├── WeightDisplay.jsx      # AHP weight distribution bar chart
+│       │   ├── AssetRegistry.jsx      # Pump table with expandable detail rows
+│       │   ├── RiskRanking.jsx        # Ranked risk table + color-coded bar chart
+│       │   ├── CriteriaContribution.jsx # Stacked bar of weighted criterion contributions
+│       │   └── RiskScatterPlot.jsx    # Risk vs Condition scatter with quadrants
+│       ├── hooks/
+│       │   ├── useAHP.js              # API hook for /ahp/calculate-weights
+│       │   └── useRiskScores.js       # Fetches /ahp/assets with current weights
+│       └── utils/
+│           ├── dateUtils.js
+│           └── dataParser.js          # CSV/JSON parsing + validation (client-side)
 ├── tests/
 │   └── ahp/
 ├── .env.example
 ├── requirements.txt
-└── CLAUDE.md                 # Architecture spec and build guide
+└── CLAUDE.md                  # Architecture spec and build guide
 ```
 
 ---

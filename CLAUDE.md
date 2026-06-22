@@ -1,4 +1,4 @@
-# CLAUDE.md — Asset Risk Dashboard (Dynamic AHP Module)
+# CLAUDE.md — Asset Management Dashboard (Dynamic AHP Module)
 
 ## Project Overview
 
@@ -61,9 +61,10 @@ asset-risk-dashboard/
 │       ├── App.jsx
 │       ├── components/
 │       │   ├── Dashboard.jsx          # Orchestrates all components + KPI cards + history log
-│       │   ├── AssetRegistry.jsx      # Pump table with expandable detail rows
 │       │   ├── AHPMatrix.jsx          # 5×5 pairwise matrix UI
+│       │   ├── DataUpload.jsx         # CSV/JSON upload with validation + template download
 │       │   ├── WeightDisplay.jsx      # AHP weight distribution bar chart
+│       │   ├── AssetRegistry.jsx      # Pump table with expandable detail rows
 │       │   ├── RiskRanking.jsx        # Ranked risk table + color-coded bar chart
 │       │   ├── CriteriaContribution.jsx # Stacked bar chart of weighted criterion contributions
 │       │   └── RiskScatterPlot.jsx    # Risk vs Condition scatter plot with quadrants
@@ -71,7 +72,8 @@ asset-risk-dashboard/
 │       │   ├── useAHP.js
 │       │   └── useRiskScores.js
 │       └── utils/
-│           └── dateUtils.js
+│           ├── dateUtils.js
+│           └── dataParser.js          # CSV/JSON parsing, validation, template generation
 │
 ├── tests/
 │   ├── ahp/
@@ -318,31 +320,40 @@ React Dashboard       →   AHP matrix UI, weight chart, risk ranking (live upda
 
 All shared state lives in `Dashboard.jsx`. No component holds its own copy of weights.
 
+### Default data flow (pumps.json)
 ```
 AHPMatrix (useAHP hook → POST /ahp/calculate-weights)
     ↓ onWeightsUpdate callback
 Dashboard.ahpResult state  →  extracts weights
     ↓
-useRiskScores(weights)     →  GET /ahp/assets?weights=...  →  assets[]
-    ↓ passed as props
-KPI Cards (inline)         ←  ahpResult + assets
-WeightDisplay              ←  weights
-AssetRegistry              ←  assets
-RiskRanking                ←  assets
-CriteriaContribution       ←  assets
-RiskScatterPlot            ←  assets
-Score History Log (inline) ←  ahpResult + assets (React state only, no API)
+useRiskScores(weights)     →  GET /ahp/assets?weights=...  →  defaultAssets[]
+    ↓
+assets = customAssets ?? defaultAssets   →  passed as props to all components
+```
+
+### Custom data flow (user upload)
+```
+DataUpload  →  dataParser.js (client-side parse + validate)
+    ↓ onDataLoaded(pumps, filename)
+Dashboard.customPumps state
+    ↓ useEffect (scores + ranks custom pumps)
+    ├── POST /ahp/score-asset per pump  →  C1-C5 Saaty scores
+    ├── Client-side dot product          →  risk_factor per pump
+    └── Sort descending                  →  customAssets[]
+    ↓
+assets = customAssets ?? defaultAssets   →  same props to all components
 ```
 
 ### Dashboard Layout (top to bottom)
 1. AHPMatrix (pairwise comparison input + Calculate Weights button)
-2. KPI Summary Cards (avg risk, highest risk pump, high-risk count, CR status)
-3. WeightDisplay (Recharts bar chart of criterion weights)
-4. AssetRegistry (table with expandable detail rows for all 29 variables)
-5. RiskRanking (ranked table + color-coded bar chart: green 1-3, yellow 4-6, red 7-9)
-6. CriteriaContribution (stacked bar chart of w*s per criterion per pump)
-7. RiskScatterPlot (condition vs risk scatter with quadrant reference lines)
-8. Score History Log (appends a row per matrix submission; React state only)
+2. DataUpload (upload CSV/JSON, reset to default, download template)
+3. KPI Summary Cards (avg risk, highest risk pump, high-risk count, CR status)
+4. WeightDisplay (Recharts bar chart of criterion weights)
+5. AssetRegistry (table with expandable detail rows for all 29 variables)
+6. RiskRanking (ranked table + color-coded bar chart: green 1-3, yellow 4-6, red 7-9)
+7. CriteriaContribution (stacked bar chart of w*s per criterion per pump)
+8. RiskScatterPlot (condition vs risk scatter with quadrant reference lines)
+9. Score History Log (appends a row per matrix submission or data upload; React state only)
 
 ---
 
@@ -352,11 +363,28 @@ When the user submits a new pairwise matrix:
 1. Matrix updates → reciprocals recalculate
 2. Weights recalculate via API
 3. CR revalidates and displays
-4. All 5 pump risk scores update
+4. All pump risk scores update (default or custom data)
 5. Every component re-renders simultaneously with new scores
 6. History log appends a new entry with timestamp, weights, pump scores, and CR
 
+When the user uploads custom pump data:
+1. File parsed and validated client-side (dataParser.js)
+2. Each pump scored via POST /ahp/score-asset (C2, C3, C5 recalculated)
+3. Risk factors computed client-side with current weights
+4. customAssets overrides defaultAssets for all components
+5. History log appends an entry noting the upload
+6. Reset button reverts to default pumps.json data
+
 No page refresh required. Everything updates in real time.
+
+### Data Upload Validation (client-side in dataParser.js)
+- Accepts .json or .csv only
+- 1-20 pump assets per file
+- All 29 fields required per pump
+- Enum fields checked: vibration_level, seal_condition, bearing_condition, maintenance_cost_trend
+- Numeric fields must be valid numbers; condition_score must be 1-10
+- Date fields (install_date, last_maintenance_date) must be YYYY-MM-DD
+- On failure: specific error messages shown, current data preserved
 
 ---
 
