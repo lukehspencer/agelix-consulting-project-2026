@@ -5,8 +5,11 @@ import AssetRegistry from './AssetRegistry'
 import RiskRanking from './RiskRanking'
 import CriteriaContribution from './CriteriaContribution'
 import RiskScatterPlot from './RiskScatterPlot'
+import RULDisplay from './RULDisplay'
+import RULExplanation from './RULExplanation'
 import DataUpload from './DataUpload'
 import { useRiskScores } from '../hooks/useRiskScores'
+import { useRUL } from '../hooks/useRUL'
 
 const SCORE_KEYS = [
   'score_criticality', 'score_condition', 'score_failure_probability',
@@ -38,6 +41,12 @@ export default function Dashboard() {
   const assets = customAssets ?? defaultAssets
   const loading = customPumps ? scoringCustom : defaultLoading
   const error = customPumps ? scoringError : defaultError
+
+  const cr = ahpResult?.cr ?? null
+  const {
+    rulPredictions, rulExplanations, fetchExplanation,
+    isLoadingPredictions, isLoadingExplanation, error: rulError,
+  } = useRUL(weights, cr, assets)
 
   function handleWeightsUpdate(data) {
     setAhpResult(data)
@@ -222,6 +231,27 @@ export default function Dashboard() {
       <CriteriaContribution assets={assets} />
 
       <RiskScatterPlot assets={assets} />
+
+      <RULDisplay
+        assets={assets}
+        rulPredictions={rulPredictions}
+        isLoadingPredictions={isLoadingPredictions}
+        cr={cr}
+      />
+
+      <RULExplanation
+        assets={assets}
+        rulPredictions={rulPredictions}
+        rulExplanations={rulExplanations}
+        fetchExplanation={fetchExplanation}
+        isLoadingExplanation={isLoadingExplanation}
+      />
+
+      {rulError && (
+        <div className="alert alert-error">
+          <strong>RUL Error:</strong> {rulError}
+        </div>
+      )}
 
       {history.length > 0 && (
         <section className="card history-log">
