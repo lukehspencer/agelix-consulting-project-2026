@@ -1,353 +1,733 @@
-# CLAUDE.md -- Asset Management Dashboard
+# CLAUDE.md — Asset Management Dashboard (Dynamic AHP + ML RUL)
 
 ## Project Overview
 
-This is a solo internship project for **Agelix Consulting**, built to extend their asset lifecycle management platform **Assets Maestro**. The dashboard manages centrifugal pump assets through two integrated modules:
+This is a solo internship project for **Agelix Consulting**, built to extend their asset
+lifecycle management platform **Assets Maestro**. The goal is to build an asset management
+dashboard for KSB Calio 30-40 centrifugal pump assets with two phases:
 
-1. **Dynamic AHP** (Phase 1 -- complete): Pairwise comparison matrix, consistency validation, criteria weight derivation, risk factor scoring, and full dashboard visualization.
-2. **ML-Based RUL Prediction + GenAI Explainability** (Phase 2 -- complete): XGBoost model predicts Remaining Useful Life per pump using AHP weights as engineered features. Claude (Anthropic API) generates plain language explanations with recommended maintenance actions.
+- **Phase 1 (complete):** Dynamic AHP engine + overall risk factor calculation + React dashboard
+- **Phase 2 (current focus):** ML-based RUL prediction using XGBoost with AHP outputs as
+  engineered feature inputs + GenAI explanation layer via Anthropic API
 
-The AHP module feeds directly into the RUL model. AHP criteria weights and per-asset weighted score vectors serve as engineered feature inputs, making RUL predictions adaptive to expert judgment encoded in the AHP matrix.
+The official data source is the KSB Calio 30-40 telemetry dataset provided by the CEO.
+A telemetry aggregator bridges the CEO sensor schema into AHP-compatible inputs so that
+the entire Phase 1 AHP engine remains unchanged.
+
+---
+
+## What Changed When the CEO's Data Was Introduced
+
+This section explains every change from the original plan. Read this before
+touching any file.
+
+### Before (original plan)
+- Pump data lived in `data/pumps.json` -- 5 manually created records
+- C2, C3, C5 scores were derived from static variables in that file
+- RUL training data was 500 synthetically generated rows using a formula
+- RUL training target was an estimated formula output
+
+### Now (CEO data)
+- `data/pumps.json` is no longer used or loaded anywhere
+- All pump data comes from the CEO's Excel files via `data/telemetry_aggregator.py`
+- C2, C3, C5 scores are derived automatically from real sensor readings
+- C1 and C4 remain manual inputs in the dashboard UI (sensors cannot provide these)
+- RUL training data is real daily sensor readings from CEO telemetry
+- RUL training target is `True_RUL_Days` from the telemetry file (converted to years)
+
+### What Did NOT Change
+- `ahp/criteria_scoring.py` -- same scoring logic, same variable names, unchanged
+- `ahp/ahp_engine.py` -- unchanged
+- `ahp/risk_calculator.py` -- unchanged
+- All AHP math, Saaty scale, CR validation -- unchanged
+- The dot product risk factor formula -- unchanged
+- The 1-10 internal scale -> 1-9 Saaty conversion -- unchanged
+- The React frontend components from Phase 1 -- unchanged
+
+---
+
+## Current Phase
+
+**Phase 2 -- Telemetry Aggregator + ML RUL + GenAI Explainability**
+
+Phase 1 is complete. Do not modify anything in:
+- `ahp/`
+- `frontend/src/components/` (except wiring in new Phase 2 components)
+
+All new Phase 2 work is scoped to:
+- `data/raw/` (CEO telemetry + maintenance log files)
+- `data/telemetry_aggregator.py` (NEW)
+- `rul/feature_engineering.py` (NEW)
+- `rul/ml_rul_model.py` (NEW)
+- `rul/rul_explainer.py` (NEW)
+- `rul/train.py` (NEW)
+- `rul/api.py` (NEW)
+- `frontend/src/components/ManualScoreInputs.jsx` (NEW)
+- `frontend/src/components/RULDisplay.jsx` (NEW)
+- `frontend/src/components/RULExplanation.jsx` (NEW)
+- `frontend/src/hooks/useRUL.js` (NEW)
+- `ahp/api.py` (MINOR UPDATE -- load from aggregator instead of pumps.json)
 
 ---
 
 ## Folder Structure
 
 ```
-asset-risk-dashboard/
+agelix-consulting-project-2026/
 |
-+-- main.py                            # FastAPI entry point (mounts ahp + rul routers)
-+-- CLAUDE.md                          # This file
-+-- README.md                          # Project overview and setup instructions
-+-- .env                               # Environment variables (never commit)
-+-- .env.example                       # Safe template (no secrets)
++-- main.py                                # FastAPI entry point (mounts ahp + rul routers)
++-- CLAUDE.md
++-- README.md
++-- .env                                   # never commit
++-- .env.example
 +-- .gitignore
-+-- requirements.txt                   # Python dependencies
++-- requirements.txt
 |
-+-- ahp/                               # AHP MODULE (Phase 1 -- complete, do not modify)
++-- ahp/                                   # Phase 1 -- complete, do not modify
 |   +-- __init__.py
-|   +-- ahp_constants.py               # Saaty RI values, CR threshold, criteria names
-|   +-- criteria_scoring.py            # Scoring rules for C1-C5, convert_to_saaty()
-|   +-- ahp_engine.py                  # Normalize matrix, derive weights, compute CR
-|   +-- risk_calculator.py             # Dot product -> overall risk factor per pump
-|   +-- api.py                         # FastAPI AHP endpoints (defines app + CORS)
+|   +-- ahp_constants.py
+|   +-- criteria_scoring.py                # unchanged -- receives aggregator output
+|   +-- ahp_engine.py                      # unchanged
+|   +-- risk_calculator.py                 # unchanged
+|   +-- api.py                             # minor update: load from aggregator
 |
-+-- rul/                               # RUL MODULE (Phase 2 -- complete)
++-- rul/                                   # Phase 2 -- complete
 |   +-- __init__.py
-|   +-- feature_engineering.py         # 19-feature vector: 8 raw + 5 weights + 5 w*s + risk
-|   +-- ml_rul_model.py                # Loads model.pkl, exposes predict() -> rul + CI
-|   +-- rul_explainer.py               # Anthropic API (claude-sonnet-4-6) -> explanation
-|   +-- train.py                       # Synthetic data generation + XGBoost training
-|   +-- api.py                         # FastAPI RUL endpoints (APIRouter, mounted via main.py)
-|   +-- model.pkl                      # Trained XGBoost model (generated by train.py)
+|   +-- feature_engineering.py             # 24-feature vector builder
+|   +-- ml_rul_model.py                    # predict() + predict_adjusted()
+|   +-- rul_explainer.py                   # Anthropic API (claude-sonnet-4-6)
+|   +-- train.py                           # Trains XGBoost on CEO telemetry
+|   +-- api.py                             # APIRouter mounted via main.py
+|   +-- model.pkl                          # Trained model (generated by train.py)
 |
 +-- data/
-|   +-- pumps.json                     # 5 mock centrifugal pump assets (29 variables each)
-|   +-- data_schema.py                 # Variable definitions and types
+|   +-- raw/
+|   |   +-- telemetry/
+|   |   |   +-- KSB_Calio_Predictive_Maintenance_Complete.xlsx   # 1095 days x 5 pumps
+|   |   +-- maintenance/
+|   |       +-- maintenance_log.xlsx
+|   +-- telemetry_aggregator.py            # Sole data source (replaces pumps.json)
+|   +-- generate_maintenance_log.py        # CEO's script: generates telemetry + maintenance log
+|   +-- data_schema.py
 |
-+-- frontend/                          # React frontend
++-- frontend/
 |   +-- src/
 |       +-- App.jsx
 |       +-- components/
-|       |   +-- Dashboard.jsx          # Orchestrates all components + state management
-|       |   +-- AHPMatrix.jsx          # 5x5 pairwise matrix UI with CR validation
-|       |   +-- DataUpload.jsx         # CSV/JSON upload with validation + template download
-|       |   +-- WeightDisplay.jsx      # AHP weight distribution bar chart (Recharts)
-|       |   +-- AssetRegistry.jsx      # Pump table with expandable detail rows
-|       |   +-- RiskRanking.jsx        # Ranked risk table + color-coded bar chart
-|       |   +-- CriteriaContribution.jsx # Stacked bar chart of weighted criterion contributions
-|       |   +-- RiskScatterPlot.jsx    # Risk vs Condition scatter plot with quadrants
-|       |   +-- RULDisplay.jsx         # RUL progress bars + confidence intervals per pump
-|       |   +-- RULExplanation.jsx     # Claude explanation cards per pump (on demand)
+|       |   +-- Dashboard.jsx
+|       |   +-- AHPMatrix.jsx
+|       |   +-- DataUpload.jsx
+|       |   +-- WeightDisplay.jsx
+|       |   +-- AssetRegistry.jsx
+|       |   +-- RiskRanking.jsx
+|       |   +-- CriteriaContribution.jsx
+|       |   +-- RiskScatterPlot.jsx
+|       |   +-- ManualScoreInputs.jsx      # NEW: C1 and C4 inputs with defaults
+|       |   +-- RULDisplay.jsx             # RUL progress bars in months + CI
+|       |   +-- RULExplanation.jsx         # NEW: Claude explanation cards
 |       +-- hooks/
-|       |   +-- useAHP.js              # POST /ahp/calculate-weights
-|       |   +-- useRiskScores.js       # GET /ahp/assets with current weights
-|       |   +-- useRUL.js              # POST /rul/predict (auto) + /rul/explain (on demand)
+|       |   +-- useAHP.js
+|       |   +-- useRiskScores.js
+|       |   +-- useRUL.js                  # NEW: RUL state management
 |       +-- utils/
 |           +-- dateUtils.js
-|           +-- dataParser.js          # CSV/JSON parsing, validation, template generation
+|           +-- dataParser.js
 |
 +-- tests/
+|   +-- ahp/
+|   |   +-- test_ahp_engine.py
+|   |   +-- test_criteria_scoring.py
 |   +-- rul/
-|       +-- test_feature_engineering.py  # 20 tests
-|       +-- test_ml_rul_model.py         # 8 tests
-|       +-- test_rul_explainer.py        # 10 tests (mocked API)
+|       +-- test_telemetry_aggregator.py
+|       +-- test_feature_engineering.py
+|       +-- test_ml_rul_model.py
+|       +-- test_rul_explainer.py
 |
-+-- .env.example
-+-- requirements.txt
++-- docs/
+    +-- ahp-methodology.md
+    +-- criteria-scoring-rules.md
+    +-- data-schema.md
+    +-- rul-methodology.md
 ```
-
----
-
-## App Entry Point -- `main.py`
-
-```python
-from ahp.api import app
-from rul.api import router as rul_router
-
-app.include_router(rul_router)
-```
-
-`ahp/api.py` defines the FastAPI `app` instance with CORS middleware. `rul/api.py` defines an `APIRouter` with prefix `/rul`. `main.py` imports the app and mounts the RUL router onto it. Run with `uvicorn main:app --reload`.
 
 ---
 
 ## Asset Type
 
-**Centrifugal Pumps** -- all mock data and scoring rules are calibrated for industrial centrifugal pump assets.
+**KSB Calio 30-40 Glandless Circulator Pump** (Material No. 29134915)
+All scoring rules, thresholds, and RUL calculations are calibrated to this pump.
 
----
-
-## Data Schema -- 29 Variables Per Pump
-
-### Identity (7)
-| Variable | Type | Notes |
-|---|---|---|
-| `asset_id` | String | e.g. PUMP-001 |
-| `asset_name` | String | Human-readable name |
-| `manufacturer` | String | e.g. Grundfos |
-| `model_number` | String | |
-| `location` | String | Plant / Line |
-| `install_date` | Date string (YYYY-MM-DD) | Used to calculate age_years |
-| `expected_lifespan_years` | Number | Manufacturer/industry standard |
-
-### Operational (4)
-| Variable | Type | Notes |
-|---|---|---|
-| `rated_flow_rate_gpm` | Number | Manufacturer max |
-| `actual_flow_rate_gpm` | Number | Current operating point |
-| `operating_hours_per_day` | Number | |
-| `total_runtime_hours` | Number | Cumulative |
-
-### Condition / Health (5)
-| Variable | Type | Notes |
-|---|---|---|
-| `condition_score` | Number (1-10) | From last inspection; 10 = perfect |
-| `vibration_level` | Enum: Normal / High / Critical | |
-| `temperature_celsius` | Number | |
-| `seal_condition` | Enum: Good / Worn / Leaking | |
-| `bearing_condition` | Enum: Good / Worn / Failed | |
-
-### Maintenance (5)
-| Variable | Type | Notes |
-|---|---|---|
-| `last_maintenance_date` | Date string (YYYY-MM-DD) | |
-| `maintenance_frequency_days` | Number | Scheduled PM interval |
-| `maintenance_cost_last_year` | Number (USD) | |
-| `maintenance_cost_trend` | Enum: Increasing / Stable / Decreasing | |
-| `number_of_failures_last_3yr` | Number | |
-
-### AHP Criteria Scores (5) -- Derived
-| Variable | Type | How Derived |
-|---|---|---|
-| `score_criticality` | Float (1-9) | Manual input -> convert_to_saaty() |
-| `score_condition` | Float (1-9) | condition_score + penalties -> convert_to_saaty() |
-| `score_failure_probability` | Float (1-9) | age + failures + overdue -> convert_to_saaty() |
-| `score_downtime_impact` | Float (1-9) | Manual input -> convert_to_saaty() |
-| `score_maintenance_cost_trend` | Float (1-9) | trend + cost level -> convert_to_saaty() |
-
-### Calculated Outputs (3)
-| Variable | Formula |
+### Engineering Specs (used in scoring rules)
+| Parameter | Value |
 |---|---|
-| `age_years` | today - install_date |
-| `usage_intensity_pct` | actual_flow / rated_flow x 100 |
-| `days_since_maintenance` | today - last_maintenance_date |
+| Speed range | 1,000 - 2,900 RPM |
+| Max current | 0.91A |
+| Max winding temp | 110C (Class F insulation) |
+| Max SPM temp | 105C |
+| Normal voltage | 230V AC +/- 10% (207 - 253V) |
+| Fluid temp range | -10 to 110C |
+| Expected max lifetime | 30,000 operating hours |
+| Recommended PM interval | 90 days |
+
+### Known Failure Modes
+| Component | Cause | Key Signal |
+|---|---|---|
+| Bearings (ceramic/carbon) | Dry running, cavitation, abrasive wear | Vibration_Score spike |
+| Power electronics (SPM) | Thermal stress, voltage surges | SPM_Temp_C high, Mains_Voltage anomaly |
+| Motor windings (ECM) | Insulation breakdown from overtemp | Winding_Temp_C above 110C |
 
 ---
 
-## Phase 1 -- AHP Module (`ahp/`)
+## Data Sources
 
-### AHP Criteria -- The 5 Factors (C1-C5)
+### Telemetry File (daily rows per pump)
+Path: `data/raw/telemetry/KSB_Calio_Predictive_Maintenance_Complete.xlsx`
 
-| # | Criterion | Input Type |
+| Column | Type | Notes |
 |---|---|---|
-| C1 | Criticality | Manual (1-10) |
-| C2 | Condition | Derived |
-| C3 | Failure Probability | Derived |
-| C4 | Downtime Impact | Manual (1-10) |
-| C5 | Maintenance Cost Trend | Derived |
+| `Pump_ID` | String | KSB-CALIO-3040-1000 through 1004 |
+| `Date` | DateTime | Daily timestamp |
+| `Operating_Hours` | Float | Cumulative runtime hours |
+| `Speed_RPM` | Float | 1,000 - 2,900 RPM |
+| `Current_A` | Float | 0.15 - 0.91A |
+| `Winding_Temp_C` | Float | Max 110C |
+| `SPM_Temp_C` | Float | Max 105C |
+| `Mains_Voltage` | Float | 207 - 253V normal |
+| `Fluid_Temp_C` | Float | -10 to 110C |
+| `Vibration_Score` | Float | Near 0 = healthy, spikes near failure |
+| `True_RUL_Days` | Float | Days until failure -- ML training target |
 
-### Scoring Rules -- `criteria_scoring.py`
+### Maintenance Log File (one row per event)
+Path: `data/raw/maintenance/maintenance_log.xlsx`
+Generated by running the CEO's Python script (saved via rul/train.py or standalone).
 
-**Scale Convention:**
-- Internal scoring logic uses **1-10**
-- All outputs converted to **1-9 (Saaty scale)** via `convert_to_saaty()` before leaving the module
-- Higher score = higher risk contribution across ALL criteria
+| Column | Type | Notes |
+|---|---|---|
+| `Log_ID` | String | Unique event ID |
+| `Pump_ID` | String | Links to telemetry |
+| `Event_Timestamp` | DateTime | When event occurred |
+| `Event_Type` | String | Maintenance or Failure |
+| `Failed_Component` | String | Bearings / Electronics / Motor_Winding / None |
+| `Root_Cause` | String | Mechanical_Wear / Thermal_Overload / Insulation_Breakdown / Scheduled_PM |
 
+---
+
+## Telemetry Aggregator -- `data/telemetry_aggregator.py`
+
+### Purpose
+This is the sole data source for all pump data in Phase 2. It replaces pumps.json
+entirely. It reads the CEO's Excel files and produces one AHP-compatible pump dict
+per pump -- using the exact same variable names that criteria_scoring.py already
+expects. Nothing in ahp/ needs to change.
+
+### Date Column Detection
+The telemetry date column may be "Date" or "Timestamp" depending on which version
+of the CEO's file is present. The aggregator detects which exists at load time and
+uses it throughout. Never hardcode either name.
+
+### Per-Pump Snapshot Offsets
+Each pump is captured at a different point in its lifecycle to create meaningful
+spread across the dashboard:
+```python
+_PUMP_OFFSETS = {
+    "KSB-CALIO-3040-1000": -100,   # ~100 days of life remaining
+    "KSB-CALIO-3040-1001": -200,   # ~200 days remaining
+    "KSB-CALIO-3040-1002": -300,   # ~300 days remaining
+    "KSB-CALIO-3040-1003": -500,   # ~500 days remaining
+    "KSB-CALIO-3040-1004": -700,   # ~700 days remaining (healthiest)
+}
+```
+The snapshot row determines all aggregated values: Operating_Hours, Winding_Temp_C,
+True_RUL_Days, and the reference date for maintenance log lookups. The 7-row rolling
+window ends at the snapshot row.
+
+### Public Interface
+```python
+def get_pump_data(c1_score: int = 7, c4_score: int = 6) -> list[dict]:
+    """
+    Returns list of 5 pump dicts ready for criteria_scoring.py.
+    c1_score and c4_score override the default manual inputs.
+    """
+```
+
+Called by ahp/api.py instead of loading pumps.json.
+
+### How Each AHP Criterion Is Derived
+
+#### C2 -- Condition (derived from telemetry)
+
+Step 1: Compute rolling 7-day mean of Vibration_Score -> vibration base score
+Note: CEO's Vibration_Score is an unbounded degradation index (0 = healthy, 6+ near failure).
+Thresholds are calibrated to this scale, not a 0-1 range.
+```
+vibration_mean < 0.5    -> base = 9  (healthy)
+vibration_mean 0.5-1.0  -> base = 7  (slight wear)
+vibration_mean 1.0-2.0  -> base = 5  (moderate wear)
+vibration_mean 2.0-3.5  -> base = 3  (significant wear)
+vibration_mean > 3.5    -> base = 1  (critical)
+```
+
+Step 2: Apply penalties
+```
+Winding temp penalty (% of 110C limit):
+  Winding_Temp_C < 55C   -> 0
+  55C - 77C              -> -1
+  77C - 99C              -> -2
+  > 99C                  -> -3
+
+SPM temp penalty (% of 105C limit):
+  SPM_Temp_C < 52C       -> 0
+  52C - 73C              -> -1
+  73C - 94C              -> -2
+  > 94C                  -> -3
+
+Current load penalty (% of 0.91A max):
+  Current_A < 60% max    -> 0
+  60% - 75%              -> -1
+  75% - 90%              -> -2
+  > 90%                  -> -3
+```
+
+Step 3: Final condition score
+```python
+condition_score = clamp(base + winding_penalty + spm_penalty + current_penalty, 1, 10)
+```
+
+Also derive these enum fields for the UI:
+```
+vibration_level:
+  vibration_mean < 1.0    -> Normal
+  vibration_mean 1.0-2.5  -> High
+  vibration_mean > 2.5    -> Critical
+
+bearing_condition (from 7-day std dev of Vibration_Score):
+  std < 0.3   -> Good
+  std 0.3-0.8 -> Worn
+  std > 0.8   -> Failed
+
+seal_condition (from 7-day slope of Current_A):
+  slope near 0 (stable)      -> Good
+  slope rising < 10% of mean -> Worn
+  slope rising > 10% of mean -> Leaking
+```
+
+#### C3 -- Failure Probability (derived from telemetry + maintenance log)
+
+```python
+# Age factor from operating hours
+total_runtime_hours = latest Operating_Hours value for this pump
+age_ratio = total_runtime_hours / 30000   # KSB expected lifetime
+
+age_factor:
+  age_ratio < 0.20  -> 0
+  age_ratio < 0.40  -> 1
+  age_ratio < 0.60  -> 2
+  age_ratio < 0.80  -> 3
+  age_ratio < 1.00  -> 4
+  age_ratio >= 1.00 -> 5
+
+# Failure history from maintenance log
+number_of_failures_last_3yr = count of Event_Type == "Failure"
+                               for this Pump_ID in last 365 days
+failure_factor = min(number_of_failures_last_3yr, 4)
+
+# Maintenance overdue from maintenance log
+last_maintenance = most recent Event_Timestamp where Event_Type == "Maintenance"
+days_since_maintenance = (latest_date - last_maintenance).days
+maintenance_frequency_days = 90   # KSB spec, fixed
+
+overdue_ratio = days_since_maintenance / 90
+overdue_factor:
+  overdue_ratio < 0.50  -> 0
+  overdue_ratio < 1.00  -> 1
+  overdue_ratio >= 1.00 -> 2
+
+# Also derive age_years for the feature vector
+age_years = total_runtime_hours / 22 / 365
+# NOTE: age_years is NO LONGER derived from install_date.
+# It is always derived from Operating_Hours.
+```
+
+#### C4 -- Downtime Impact (manual input)
+```
+Cannot be derived from sensors.
+Default: 6
+User can override in ManualScoreInputs.jsx (1-10 scale)
+```
+
+#### C5 -- Maintenance Cost Trend (derived from maintenance log + telemetry)
+
+```python
+# Failure frequency trend
+current_period_failures  = count Failure events in last 90 days
+previous_period_failures = count Failure events in prior 90 days
+
+maintenance_cost_trend:
+  current > previous + 1    -> Increasing
+  abs(current - previous) <= 1 -> Stable
+  current < previous - 1    -> Decreasing
+
+trend_base:
+  Increasing -> 8
+  Stable     -> 5
+  Decreasing -> 2
+
+# Voltage anomaly modifier (proxy for electronics repair cost risk)
+voltage_anomaly_count = count of days where
+  Mains_Voltage < 207 or Mains_Voltage > 253
+  in last 30 days
+
+voltage_modifier:
+  0 anomalies    -> 0
+  1-2 anomalies  -> +1
+  3-5 anomalies  -> +2
+  > 5 anomalies  -> +3
+
+# Estimated annual maintenance cost from failure log
+maintenance_cost_last_year = sum of repair costs for failures in last 365 days:
+  Bearings failure       -> $2,500
+  Electronics failure    -> $4,000
+  Motor_Winding failure  -> $3,500
+  Unknown failure        -> $3,000
+```
+
+#### C1 -- Criticality (manual input)
+```
+Cannot be derived from sensors.
+Default: 7
+User can override in ManualScoreInputs.jsx (1-10 scale)
+```
+
+### Aggregator Output Format
+
+One dict per pump containing all fields criteria_scoring.py expects
+plus additional fields for the RUL feature vector:
+
+```python
+{
+    # Identity
+    "asset_id": "KSB-CALIO-3040-1000",
+    "asset_name": "KSB Calio 3040 - Unit 1000",
+    "manufacturer": "KSB",
+    "model_number": "Calio 30-40",
+    "location": "Plant 1",
+    "expected_lifespan_years": 20,
+
+    # Derived from Operating_Hours
+    "total_runtime_hours": 14500.0,
+    "age_years": 1.81,               # total_runtime_hours / 22 / 365
+    "operating_hours_per_day": 22,
+
+    # C2 inputs (derived from telemetry)
+    "condition_score": 7,            # 1-10, feeds criteria_scoring.py C2
+    "vibration_level": "Normal",     # enum for UI display
+    "temperature_celsius": 54.2,     # latest Winding_Temp_C
+    "seal_condition": "Good",        # enum for UI display
+    "bearing_condition": "Good",     # enum for UI display
+
+    # C3 inputs (derived from telemetry + log)
+    "number_of_failures_last_3yr": 1,
+    "days_since_maintenance": 45,
+    "maintenance_frequency_days": 90,
+
+    # C5 inputs (derived from log + telemetry)
+    "maintenance_cost_last_year": 2500,
+    "maintenance_cost_trend": "Stable",
+
+    # C1 and C4 manual inputs with defaults
+    "criticality_raw": 7,            # default, user overridable (1-10)
+    "downtime_impact_raw": 6,        # default, user overridable (1-10)
+
+    # Rolling telemetry features (for RUL feature vector)
+    "rolling_vibration_mean": 0.42,
+    "rolling_vibration_std": 0.08,
+    "rolling_winding_temp_mean": 54.2,
+    "rolling_spm_temp_mean": 58.1,
+    "rolling_current_mean": 0.55,
+    "voltage_anomaly_count": 1,
+
+    # ML training target
+    "true_rul_days": 87
+}
+```
+
+---
+
+## AHP Criteria -- The 5 Factors (C1-C5)
+
+| # | Criterion | Source | Default |
+|---|---|---|---|
+| C1 | Criticality | Manual input | 7 |
+| C2 | Condition | Derived from Vibration_Score, Winding_Temp_C, SPM_Temp_C, Current_A | auto |
+| C3 | Failure Probability | Derived from Operating_Hours, failure log, maintenance log | auto |
+| C4 | Downtime Impact | Manual input | 6 |
+| C5 | Maintenance Cost Trend | Derived from failure log event counts + Mains_Voltage anomalies | auto |
+
+---
+
+## Scoring Rules -- `ahp/criteria_scoring.py` (UNCHANGED)
+
+This file does not change in Phase 2. It receives the same variable names
+from the aggregator that it previously received from pumps.json.
+
+### Scale Convention
+- All inputs: 1-10 internal scale
+- All outputs: 1-9 Saaty scale via convert_to_saaty()
+- Higher score = higher risk across ALL criteria
+
+### convert_to_saaty()
 ```python
 def convert_to_saaty(score: float) -> float:
     return round(1 + (score - 1) * (8 / 9), 2)
 ```
 
-**C2 -- Condition:**
+### C1 -- Criticality
 ```
-base score  = invert(condition_score):
-              9-10 -> 1, 7-8 -> 3, 5-6 -> 5, 3-4 -> 7, 1-2 -> 9
-
-vibration:    Normal -> 0, High -> +1, Critical -> +2
-seal:         Good   -> 0, Worn -> +1, Leaking  -> +2
-bearing:      Good   -> 0, Worn -> +1, Failed   -> +2
-
-raw = clamp(base + penalties, 1, 10)
-output = convert_to_saaty(raw)
+input:  criticality_raw (1-10)
+output: convert_to_saaty(clamp(criticality_raw, 1, 10))
 ```
 
-**C3 -- Failure Probability:**
+### C2 -- Condition
 ```
-age_ratio     = age_years / expected_lifespan_years
+input:  condition_score (1-10, from aggregator)
+output: convert_to_saaty(clamp(condition_score, 1, 10))
+```
 
-age_factor:   ratio < 0.2  -> 0
-              ratio < 0.4  -> 1
-              ratio < 0.6  -> 2
-              ratio < 0.8  -> 3
-              ratio < 1.0  -> 4
-              ratio >= 1.0 -> 5
+### C3 -- Failure Probability
+```
+inputs: age_years, number_of_failures_last_3yr,
+        days_since_maintenance, maintenance_frequency_days
+
+age_ratio = age_years / (30000 / 22 / 365)   # normalize to lifespan
+age_factor: ratio brackets 0-5 pts (see aggregator section)
 
 failure_factor = min(number_of_failures_last_3yr, 4)
 
 overdue_ratio = days_since_maintenance / maintenance_frequency_days
-
-overdue_factor: overdue_ratio < 0.5  -> 0
-                overdue_ratio < 1.0  -> 1
-                overdue_ratio >= 1.0 -> 2
+overdue_factor: ratio brackets 0-2 pts
 
 raw = clamp(round((age_factor + failure_factor + overdue_factor) / 11 * 10), 1, 10)
 output = convert_to_saaty(raw)
 ```
 
-**C5 -- Maintenance Cost Trend:**
+### C4 -- Downtime Impact
 ```
-trend base:   Decreasing -> 2, Stable -> 5, Increasing -> 8
-cost modifier: <$1k -> -1, $1k-$3k -> 0, $3k-$6k -> +1, >$6k -> +2
+input:  downtime_impact_raw (1-10)
+output: convert_to_saaty(clamp(downtime_impact_raw, 1, 10))
+```
 
-raw = clamp(base + modifier, 1, 10)
+### C5 -- Maintenance Cost Trend
+```
+inputs: maintenance_cost_trend (enum), maintenance_cost_last_year ($)
+
+trend_base: Decreasing -> 2, Stable -> 5, Increasing -> 8
+
+cost_modifier:
+  < $1,000    -> -1
+  $1k - $3k   -> 0
+  $3k - $6k   -> +1
+  > $6,000    -> +2
+
+raw = clamp(trend_base + cost_modifier, 1, 10)
 output = convert_to_saaty(raw)
 ```
 
-### AHP Engine -- `ahp_engine.py`
+---
 
-Input: 5x5 pairwise comparison matrix (upper triangle filled by user, lower triangle auto-filled with reciprocals).
+## AHP Engine -- `ahp/ahp_engine.py` (UNCHANGED)
 
-Steps:
-1. Fill reciprocals: `matrix[j][i] = 1 / matrix[i][j]`
+### Steps
+1. Fill reciprocals: matrix[j][i] = 1 / matrix[i][j]
 2. Column-normalize: divide each cell by its column sum
-3. Derive weights: average each row of normalized matrix -> `weights [w1-w5]`, sum = 1.0
-4. Compute consistency:
+3. Derive weights: average each row -> weights [w1-w5], sum = 1.0
+4. Compute CR:
 ```
 lambda_max = mean(weighted_sum_vector / weights)
-CI         = (lambda_max - n) / (n - 1)     # n = 5
-CR         = CI / RI[5]                      # RI[5] = 1.12
+CI = (lambda_max - n) / (n - 1)    # n = 5
+CR = CI / RI[5]                     # RI[5] = 1.12
 ```
-5. Validate: CR <= 0.10 -> valid; CR > 0.10 -> warn user
+5. CR <= 0.10 -> valid. CR > 0.10 -> warn user, block RUL prediction.
 
-Constants (`ahp_constants.py`):
+### AHP Constants
 ```python
 RI = {1: 0.00, 2: 0.00, 3: 0.58, 4: 0.90, 5: 1.12, 6: 1.24, 7: 1.32}
 CR_THRESHOLD = 0.10
 CRITERIA = ["Criticality", "Condition", "Failure Probability",
             "Downtime Impact", "Maintenance Cost Trend"]
-SAATY_SCALE = {1: "Equal", 3: "Moderate", 5: "Strong", 7: "Very Strong", 9: "Extreme"}
 ```
 
-### Risk Calculator -- `risk_calculator.py`
+---
+
+## Risk Calculator -- `ahp/risk_calculator.py` (UNCHANGED)
 
 ```python
 risk_factor = sum(w * s for w, s in zip(weights, scores))
 ```
-
-- Weights from AHP engine (sum to 1.0)
-- Scores from criteria_scoring.py (1-9 Saaty scale)
-- Result: risk factor per pump between 1-9
-- All pumps ranked highest -> lowest by risk factor
-- `rank_assets()` includes all 29 pump fields in the response via `**pump` spread
+Result: 1-9 per pump. All pumps ranked highest to lowest.
 
 ---
 
-## Phase 2 -- RUL Module (`rul/`)
+## Phase 2 -- ML RUL Prediction + GenAI Explainability
+
+### How the RUL Model Now Works
+
+The XGBoost model is trained on real CEO telemetry data.
+Each daily telemetry row becomes one training sample.
+The training target is True_RUL_Days / 365 (converted to years).
+At inference time the model receives the same 24-feature vector
+but with the user's live AHP weights instead of equal weights.
 
 ### Feature Engineering -- `rul/feature_engineering.py`
 
-Builds a 19-feature ML input vector per pump. Never collapse AHP weights or weighted scores into a single scalar.
+24-feature input vector. Never collapse AHP weights or weighted scores.
 
-```
-Features (in order):
- 0-7:   age_years, usage_intensity_pct, total_runtime_hours,
-        operating_hours_per_day, condition_score,
-        number_of_failures_last_3yr, days_since_maintenance,
-        maintenance_cost_last_year
- 8-12:  weights[0..4]  (individual AHP weights)
-13-17:  weights[i] * scores[i]  (individual weighted scores)
-18:     risk_factor  (sum of features 13-17)
-```
-
-Key functions:
-- `build_feature_vector(pump, weights, scores) -> list[float]` (19 elements)
-- `get_feature_names() -> list[str]` (19 feature name strings)
-- `validate_feature_vector(vector)` (raises ValueError if not 19 finite numbers)
-
-### Training -- `rul/train.py`
-
-Generates 500 synthetic pump records and trains an XGBoost model. Must be run once before the RUL API works.
-
-```bash
-python -m rul.train
-```
-
-**Synthetic RUL label formula:**
-```
-base_rul = 20 - age_years
-degradation = (10 - condition_score) * 0.4
-            + usage_intensity_pct / 100 * 0.3
-            + number_of_failures_last_3yr * 0.5
-            + risk_factor * 0.3
-rul = max(0, base_rul - degradation + N(0, 0.5))
-```
-
-**XGBoost hyperparameters:**
 ```python
-n_estimators=200, max_depth=6, learning_rate=0.05,
-subsample=0.8, colsample_bytree=0.8, objective="reg:squarederror"
+def build_feature_vector(pump: dict, weights: list, scores: list) -> list:
+    weighted_scores = [w * s for w, s in zip(weights, scores)]
+    risk_factor = sum(weighted_scores)
+
+    return [
+        # Raw pump state variables (8 features)
+        pump["total_runtime_hours"],       # 1
+        pump["operating_hours_per_day"],   # 2
+        pump["condition_score"],           # 3
+        pump["number_of_failures_last_3yr"], # 4
+        pump["days_since_maintenance"],    # 5
+        pump["maintenance_cost_last_year"], # 6
+        pump["criticality_raw"],           # 7
+        pump["downtime_impact_raw"],       # 8
+
+        # AHP weight vector (5 features)
+        weights[0],                        # 9  Criticality weight
+        weights[1],                        # 10 Condition weight
+        weights[2],                        # 11 Failure Probability weight
+        weights[3],                        # 12 Downtime Impact weight
+        weights[4],                        # 13 Maintenance Cost Trend weight
+
+        # AHP weighted score vector (5 features)
+        weighted_scores[0],                # 14 w1*s1
+        weighted_scores[1],                # 15 w2*s2
+        weighted_scores[2],                # 16 w3*s3
+        weighted_scores[3],                # 17 w4*s4
+        weighted_scores[4],                # 18 w5*s5
+
+        # Overall risk factor (1 feature)
+        risk_factor,                       # 19
+
+        # Rolling telemetry features (5 features)
+        pump["rolling_vibration_mean"],    # 20
+        pump["rolling_vibration_std"],     # 21
+        pump["rolling_winding_temp_mean"], # 22
+        pump["rolling_spm_temp_mean"],     # 23
+        pump["voltage_anomaly_count"],     # 24
+    ]
 ```
 
-80/20 train/test split. Model serialized to `rul/model.pkl` via joblib.
+Also expose:
+- `get_feature_names() -> list[str]` -- 24 names in same order
+- `validate_feature_vector(v) -> None` -- raises ValueError if not 24 finite values
 
 ### ML Model -- `rul/ml_rul_model.py`
 
-Loads `rul/model.pkl` at first call (lazy). Raises `FileNotFoundError` with message "Run rul/train.py first to generate model.pkl" if missing.
+Model: XGBoost Regressor
+Training data: CEO telemetry (daily rows, rolling 7-day features)
+Training target: True_RUL_Days / 365
 
 ```python
-predict(feature_vector: list[float]) -> dict:
-    # Returns: { rul_years: float, ci_low: float, ci_high: float }
-    # rul_years: rounded to 1 decimal, clamped >= 0
-    # ci_low:  max(0, rul_years - 1.5)
-    # ci_high: rul_years + 1.5
+xgb_params = {
+    "n_estimators": 200,
+    "max_depth": 6,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "objective": "reg:squarederror"
+}
 ```
 
-Confidence interval is a fixed-width +/-1.5yr approximation. To be replaced with proper quantile regression in a future iteration.
+Expose two functions:
+
+```python
+def predict(feature_vector: list) -> dict:
+    # Returns raw XGBoost prediction
+    return {
+        "rul_years": float,   # rounded to 1 decimal
+        "ci_low": float,      # max(0, rul_years - 1.5)
+        "ci_high": float      # rul_years + 1.5
+    }
+
+def predict_adjusted(feature_vector: list, risk_factor: float) -> dict:
+    # Applies AHP risk adjustment to raw prediction
+    # R_asset = (risk_factor - 1) / 8    normalize 1-9 to 0-1
+    # rul_adjusted = rul_years * (1 - R_asset)
+    # Returns same dict structure with adjusted values
+```
+
+If model.pkl not found raise:
+"Run rul/train.py first to generate model.pkl"
+
+### Training Script -- `rul/train.py`
+
+Load CEO telemetry from:
+  data/raw/telemetry/KSB_Calio_Predictive_Maintenance_Complete.xlsx
+
+Load maintenance log from:
+  data/raw/maintenance/maintenance_log.xlsx
+
+For each daily telemetry row (skip first 7 rows per pump -- need rolling window):
+- Compute 7-day rolling features from previous rows
+- Derive condition_score using C2 scoring logic
+- Use equal AHP weights [0.2, 0.2, 0.2, 0.2, 0.2] during training
+- Derive AHP scores from pump variables using criteria_scoring.py logic
+- Build 24-feature vector
+- Label = True_RUL_Days / 365
+
+Train/test split: by Pump_ID (hold out 2 pumps as test set -- no row-level leakage)
+
+Print after training:
+- Train RMSE (years)
+- Test RMSE (years)
+- Top 10 feature importances
+
+Save model to rul/model.pkl using joblib.
 
 ### GenAI Explainability -- `rul/rul_explainer.py`
 
-Calls the Anthropic API to generate a plain language explanation of each pump's RUL prediction.
-
-- **Model:** `claude-sonnet-4-6`
-- **API key:** loaded from `.env` via `python-dotenv` (never hardcoded)
-- **Max tokens:** 512
+Model: claude-sonnet-4-6
+API key: ANTHROPIC_API_KEY from .env via python-dotenv. Never hardcode.
 
 ```python
-explain(pump, weights, scores, risk_factor, predicted_rul, ci_low, ci_high) -> str
+def explain(pump, weights, scores, risk_factor,
+            predicted_rul, ci_low, ci_high) -> str:
 ```
 
-The prompt includes: asset identity, all 5 labeled AHP weights, all 5 labeled Saaty scores, overall risk factor, predicted RUL + CI, and raw condition indicators. Instructs Claude to explain in 3-4 sentences why the pump has this RUL, what the biggest risk drivers are, and what maintenance action to prioritize.
+Prompt must include:
+- Asset ID and model (KSB Calio 30-40)
+- All 5 AHP criteria weights labeled by name
+- All 5 per-criterion risk scores on 1-9 Saaty scale
+- Overall risk factor out of 9
+- Predicted RUL in years + confidence interval
+- Key telemetry: rolling_vibration_mean, rolling_winding_temp_mean,
+  rolling_spm_temp_mean, voltage_anomaly_count, days_since_maintenance
+- Known failure modes: bearings (vibration), electronics (SPM temp +
+  voltage), motor windings (winding temp above 110C)
+- Instruction: in 3-4 sentences explain why this pump has this RUL,
+  what the biggest risk drivers are given the AHP weights, and what
+  maintenance action should be prioritized
 
-If the API call fails, raises `RuntimeError` with the original error message.
+Returns plain text string only. Strip whitespace.
+On API failure: raise RuntimeError with original error message.
 
-**Without a valid ANTHROPIC_API_KEY in `.env`, the explain endpoint will fail.** The rest of the app (AHP + RUL predictions) works without it.
+### CR Guard (applies to all RUL endpoints)
+If CR > 0.10 return HTTP 400:
+"AHP matrix is inconsistent (CR > 0.10). Revise pairwise
+comparisons before requesting RUL predictions."
 
 ---
 
-## FastAPI Endpoints
+## FastAPI Endpoints -- Full List
 
-### AHP (`ahp/api.py`)
+### AHP (`ahp/api.py`) -- MINOR UPDATE
+
 | Method | Route | Description |
 |---|---|---|
 | POST | `/ahp/calculate-weights` | 5x5 matrix -> weights + CR + valid flag |
@@ -355,147 +735,193 @@ If the API call fails, raises `RuntimeError` with the original error message.
 | POST | `/ahp/risk-factor` | weights + scores -> risk factor |
 | GET  | `/ahp/assets` | all pumps ranked by risk score |
 
-**GET /ahp/assets** accepts repeated `?weights=` query params. Defaults to equal weights `[0.2, 0.2, 0.2, 0.2, 0.2]`. Response includes all 29 pump fields plus `risk_factor`, `weights`, `scores`, `weighted_scores`, `criteria`. Sorted descending by `risk_factor`.
+GET /ahp/assets -- UPDATED to load from aggregator:
+```
+GET /ahp/assets?weights=0.35&weights=0.25&weights=0.2&weights=0.12&weights=0.08
+                &c1_score=7&c4_score=6
+```
+- weights: repeated float params, defaults to [0.2, 0.2, 0.2, 0.2, 0.2]
+- c1_score: int 1-10, default 7
+- c4_score: int 1-10, default 6
+- Calls telemetry_aggregator.get_pump_data(c1_score, c4_score)
+- No longer reads pumps.json
 
-**POST /ahp/score-asset** expects `criticality_raw` (1-10) and `downtime_impact_raw` (1-10), not the Saaty-converted values stored in pumps.json.
+### RUL (`rul/api.py`) -- NEW
 
-### RUL (`rul/api.py`)
 | Method | Route | Description |
 |---|---|---|
-| POST | `/rul/predict` | pump + weights + scores + cr -> RUL + confidence interval |
-| POST | `/rul/explain` | pump + weights + scores + risk data + cr -> Claude explanation |
+| POST | `/rul/predict` | pump + AHP features -> adjusted RUL + CI |
+| POST | `/rul/explain` | pump + AHP + RUL -> Claude explanation |
 
-**CR Guard:** Both RUL endpoints reject requests with CR > 0.10, returning HTTP 400 with message: "AHP matrix is inconsistent (CR > 0.10). Revise pairwise comparisons before requesting RUL predictions."
+POST /rul/predict body:
+```json
+{
+  "pump": {},
+  "weights": [0.35, 0.25, 0.2, 0.12, 0.08],
+  "scores": [6.33, 4.56, 5.44, 5.44, 3.67],
+  "cr": 0.07
+}
+```
 
-**Error codes:** 400 = CR guard, 422 = validation error, 502 = Anthropic API failure, 503 = model.pkl missing.
+POST /rul/explain body:
+```json
+{
+  "pump": {},
+  "weights": [],
+  "scores": [],
+  "risk_factor": 5.2,
+  "predicted_rul": 4.7,
+  "ci_low": 3.2,
+  "ci_high": 6.2,
+  "cr": 0.07
+}
+```
 
 ---
 
-## Data Flow -- Full System
+## ManualScoreInputs -- `frontend/src/components/ManualScoreInputs.jsx` (NEW)
+
+Editable inputs for C1 and C4. The user always enters on the 1-10 scale.
+convert_to_saaty() handles the 1-9 conversion internally in criteria_scoring.py.
 
 ```
-pumps.json (or uploaded custom data)
-    |
-    v
-criteria_scoring.py    ->  score vector [s1-s5] on 1-9 Saaty scale
-    |
-    v
-ahp_engine.py          ->  weight vector [w1-w5] + CR validation
-    |
-    v
-risk_calculator.py     ->  risk factor per pump (dot product)
-    |
-    v
-feature_engineering.py ->  19-feature input vector per pump
-    |
-    v
-ml_rul_model.py        ->  predicted RUL + confidence interval
-    |
-    v
-rul_explainer.py       ->  Claude API -> plain language explanation (on demand)
-    |
-    v
-FastAPI (main.py)      ->  serves all results to React
-    |
-    v
-React Dashboard        ->  AHP matrix, weights, risk ranking,
-                           RUL gauges, Claude explanations
+C1 -- Criticality Score
+[ 7 ] (1-10)
+1-2: Fully redundant, no operational impact
+3-4: Backup exists, minor slowdown
+5-6: No backup, non-critical process
+7-8: No backup, critical process (DEFAULT)
+9-10: Single point of failure, immediate halt
+
+C4 -- Downtime Impact Score
+[ 6 ] (1-10)
+1-2: Negligible, no production loss
+3-4: Minor, < 2 hours, < $500/hr
+5-6: Moderate, 2-8 hours, $500-$2,000/hr (DEFAULT)
+7-8: High, 8-24 hours, $2,000-$10,000/hr
+9-10: Severe, > 24 hours or safety risk
+
+[ Update Risk Scores ]
 ```
+
+On submit:
+1. Calls onManualScoresUpdate(c1, c4) prop
+2. Dashboard refetches GET /ahp/assets?c1_score=X&c4_score=Y
+3. All risk scores recalculate
+4. RUL predictions update
+5. History log appends row noting manual override
 
 ---
 
 ## Frontend State Architecture
 
-All shared state lives in `Dashboard.jsx`. No component holds its own copy of weights.
+All shared state in Dashboard.jsx. No component holds its own copy of weights.
 
-### Default data flow (pumps.json)
-```
-AHPMatrix (useAHP hook -> POST /ahp/calculate-weights)
-    | onWeightsUpdate callback
-Dashboard.ahpResult state  ->  extracts weights + cr
-    |
-useRiskScores(weights)     ->  GET /ahp/assets?weights=...  ->  defaultAssets[]
-    |
-useRUL(weights, cr, assets) -> POST /rul/predict per pump   ->  rulPredictions{}
-    |
-assets = customAssets ?? defaultAssets   ->  passed as props to all components
-```
-
-### Custom data flow (user upload)
-```
-DataUpload  ->  dataParser.js (client-side parse + validate)
-    | onDataLoaded(pumps, filename)
-Dashboard.customPumps state
-    | useEffect (scores + ranks custom pumps)
-    |- POST /ahp/score-asset per pump  ->  C1-C5 Saaty scores
-    |- Client-side dot product          ->  risk_factor per pump
-    `- Sort descending                  ->  customAssets[]
-    |
-useRUL auto-fetches /rul/predict for new assets
+### State in Dashboard.jsx
+```javascript
+ahpResult:       { weights, cr, valid }
+manualScores:    { c1: 7, c4: 6 }
+assets:          current pump list with risk scores
+rulPredictions:  keyed by asset_id
+rulExplanations: keyed by asset_id
 ```
 
 ### Dashboard Layout (top to bottom)
-1. AHPMatrix (pairwise comparison input + Calculate Weights button)
-2. DataUpload (upload CSV/JSON, reset to default, download template)
-3. KPI Summary Cards (avg risk, highest risk pump, high-risk count, CR status)
-4. WeightDisplay (Recharts bar chart of criterion weights)
-5. AssetRegistry (table with expandable detail rows for all 29 variables)
-6. RiskRanking (ranked table + color-coded bar chart: green 1-3, yellow 4-6, red 7-9)
-7. CriteriaContribution (stacked bar chart of w*s per criterion per pump)
-8. RiskScatterPlot (condition vs risk scatter with quadrant reference lines)
-9. RULDisplay (progress bars + confidence interval per pump, color: green >10yr, yellow 5-10yr, red <5yr)
-10. RULExplanation (Claude explanation cards per pump, on demand only)
-11. Score History Log (appends a row per matrix submission or data upload; React state only)
+1.  AHPMatrix
+2.  ManualScoreInputs (C1 + C4 with defaults and scoring guide)
+3.  DataUpload
+4.  KPI Summary Cards
+5.  WeightDisplay
+6.  AssetRegistry
+7.  RiskRanking
+8.  CriteriaContribution
+9.  RiskScatterPlot
+10. RULDisplay (RUL shown in months, converted from rul_years * 12 at display layer)
+11. RULExplanation (RUL header also in months)
+12. Score History Log
 
----
+### Dynamic Behavior
+When AHP matrix changes:
+  weights recalculate -> CR validates -> risk scores update ->
+  RUL predictions update (if CR valid) -> history log appends
 
-## Dynamic Behavior
+When C1 or C4 manual scores change:
+  GET /ahp/assets called with new c1_score/c4_score ->
+  all risk scores update -> RUL predictions update ->
+  history log appends noting manual override
 
-When the user submits a new pairwise matrix:
-1. Matrix updates -> reciprocals recalculate
-2. Weights recalculate via POST /ahp/calculate-weights
-3. CR revalidates and displays
-4. If CR > 0.10: block RUL prediction, show warning in RULDisplay
-5. All pump risk scores update via GET /ahp/assets (or client-side for custom data)
-6. RUL predictions auto-update via POST /rul/predict per pump (useRUL hook)
-7. Every component re-renders simultaneously with new scores
-8. History log appends a new entry with timestamp, weights, pump scores, and CR
+### Data Upload Schema (dataParser.js)
 
-When the user uploads custom pump data:
-1. File parsed and validated client-side (dataParser.js)
-2. Each pump scored via POST /ahp/score-asset (C2, C3, C5 recalculated)
-3. Risk factors computed client-side with current weights
-4. customAssets overrides defaultAssets for all components
-5. RUL predictions auto-fetch for new custom assets
-6. History log appends an entry noting the upload
-7. Reset button reverts to default pumps.json data
+Users can upload custom pump data (CSV or JSON) to replace the default KSB telemetry.
+Uploaded pumps go through the same AHP scoring and RUL prediction pipeline as default pumps.
 
-RUL explanations fetch on demand only (button click), never automatically on weight change.
+Required fields (26 total):
+```
+asset_id, asset_name, manufacturer, model_number, location,
+total_runtime_hours, operating_hours_per_day,
+condition_score, vibration_level, temperature_celsius,
+seal_condition, bearing_condition,
+number_of_failures_last_3yr, days_since_maintenance,
+maintenance_frequency_days, maintenance_cost_last_year,
+maintenance_cost_trend, criticality_raw, downtime_impact_raw,
+rolling_vibration_mean, rolling_vibration_std,
+rolling_winding_temp_mean, rolling_spm_temp_mean,
+rolling_current_mean, voltage_anomaly_count, true_rul_days
+```
 
-No page refresh required. Everything updates in real time.
+Removed from old schema (no longer required):
+  install_date, actual_flow_rate_gpm, rated_flow_rate_gpm,
+  last_maintenance_date, score_criticality, score_condition,
+  score_failure_probability, score_downtime_impact,
+  score_maintenance_cost_trend, age_years, usage_intensity_pct,
+  expected_lifespan_years
 
-### Data Upload Validation (client-side in dataParser.js)
-- Accepts .json or .csv only
-- 1-20 pump assets per file
-- All 29 fields required per pump
-- Enum fields checked: vibration_level, seal_condition, bearing_condition, maintenance_cost_trend
-- Numeric fields must be valid numbers; condition_score must be 1-10
-- Date fields (install_date, last_maintenance_date) must be YYYY-MM-DD
-- On failure: specific error messages shown, current data preserved
+Validation rules:
+- condition_score, criticality_raw, downtime_impact_raw: 1-10
+- total_runtime_hours: > 0
+- rolling_vibration_mean, rolling_vibration_std, voltage_anomaly_count, true_rul_days: >= 0
+- Enums: vibration_level, seal_condition, bearing_condition, maintenance_cost_trend
+- 1-20 pumps per file, all fields required
+
+On upload, Dashboard computes age_years = total_runtime_hours / 22 / 365 and
+sets expected_lifespan_years = 20. Scores are derived via POST /ahp/score-asset.
+RUL predictions run via POST /rul/predict using the same pipeline as default pumps.
 
 ---
 
 ## Environment Variables
 
-`.env` (never commit, gitignored):
+.env (never commit):
 ```
-API_HOST=0.0.0.0
-API_PORT=8000
-CORS_ORIGINS=http://localhost:5173
-ANTHROPIC_API_KEY=         # Required for /rul/explain only
+ANTHROPIC_API_KEY=your_key_here
+API_BASE_URL=http://localhost:8000
 ```
 
-The app runs fully without `ANTHROPIC_API_KEY` set. AHP scoring, risk ranking, and RUL predictions all work. Only the "Generate Explanation" button (which calls `/rul/explain`) requires a valid key.
+.env.example:
+```
+ANTHROPIC_API_KEY=
+API_BASE_URL=http://localhost:8000
+```
+
+---
+
+## Phase 2 Build Order (all complete)
+
+```
+1.  data/generate_maintenance_log.py  done -- CEO script, 1095 days, generates telemetry + log
+2.  data/telemetry_aggregator.py      done -- sole data source, per-pump snapshot offsets
+3.  rul/feature_engineering.py        done -- 24-feature vector builder
+4.  rul/train.py                      done -- trains XGBoost on 5440 samples from CEO telemetry
+5.  rul/ml_rul_model.py               done -- predict() + predict_adjusted() with AHP risk adj
+6.  rul/rul_explainer.py              done -- Anthropic API (claude-sonnet-4-6)
+7.  rul/api.py                        done -- APIRouter mounted via main.py
+8.  ahp/api.py (update only)          done -- loads from telemetry_aggregator, accepts c1/c4
+9.  ManualScoreInputs.jsx             done -- C1 + C4 inputs with scoring guide
+10. RULDisplay.jsx                    done -- progress bars in months, color coded, sorted by urgency
+11. RULExplanation.jsx                done -- Claude explanation cards, on demand
+12. useRUL.js                         done -- auto-predict on weight change, on-demand explain
+13. Dashboard.jsx (wire only)         done -- all Phase 2 components wired
+```
 
 ---
 
@@ -503,51 +929,74 @@ The app runs fully without `ANTHROPIC_API_KEY` set. AHP scoring, risk ranking, a
 
 | Layer | Tool |
 |---|---|
-| AHP Backend | Python 3.11+ |
-| Matrix Math | NumPy |
-| Data Handling | Pandas |
-| ML Model | XGBoost + Scikit-learn + Joblib |
+| AHP Backend | Python 3.11+ + NumPy |
+| Telemetry Aggregation | Python + Pandas + openpyxl |
+| ML Model | XGBoost + Scikit-learn + joblib |
 | GenAI Layer | Anthropic API (claude-sonnet-4-6) |
 | API Layer | FastAPI + Uvicorn |
-| Frontend | React 18 + Vite + Recharts |
-| Testing | Pytest (38 tests) |
+| Frontend | React + Recharts |
+| Testing | Pytest |
+
+## requirements.txt
+```
+numpy
+pandas
+fastapi
+uvicorn
+pytest
+xgboost
+scikit-learn
+anthropic
+python-dotenv
+openpyxl
+joblib
+```
 
 ---
 
 ## Dev Servers
 
-- Backend: `uvicorn main:app --reload` -> `http://localhost:8000`
-- Frontend: `cd frontend && npm run dev` -> `http://localhost:5173`
-- Vite proxies `/ahp/*` and `/rul/*` -> `http://localhost:8000` (no CORS config needed in dev)
-- Interactive API docs: `http://localhost:8000/docs`
+Backend:  uvicorn main:app --reload  ->  http://localhost:8000
+Frontend: cd frontend && npm run dev ->  http://localhost:5173
+Vite proxies /ahp/* and /rul/* to http://localhost:8000
 
-**Prerequisites before starting backend:**
-1. `pip install -r requirements.txt`
-2. `python -m rul.train` (generates model.pkl, required for /rul/predict)
-3. macOS: `brew install libomp` (required for XGBoost)
+Prerequisites before starting backend:
+  pip install -r requirements.txt
+  python data/generate_maintenance_log.py   (generates telemetry + maintenance log)
+  python -m rul.train                       (generates rul/model.pkl)
+  macOS: brew install libomp                (required for XGBoost)
 
 ---
 
-## Key Design Constraints
+## Key Design Constraints -- Never Violate These
 
 | Constraint | Reason |
 |---|---|
-| Store full AHP weight vector [w1-w5] as separate features | ML needs each weight individually. Collapsing to scalar loses information |
-| Store each weighted score [w1*s1 ... w5*s5] individually | Lets ML learn which criterion drives failure for each pump type |
-| Never hardcode ANTHROPIC_API_KEY | Always read from .env via python-dotenv |
-| RUL must recalculate when AHP weights change | Weights are dynamic. RUL predictions must reflect current expert judgment |
-| CR > 0.10 must block RUL prediction | Invalid AHP weights must not feed the ML model |
-| RULExplanation fetches on demand only | Avoid excessive Anthropic API calls on every weight change |
-| Do not modify ahp/ | Phase 1 is complete and stable |
-| No em dashes in the UI | Use periods, commas, or spaces instead |
+| pumps.json is no longer used | telemetry_aggregator.py is the sole data source |
+| Do not modify ahp/criteria_scoring.py, ahp_engine.py, risk_calculator.py | Phase 1 is complete and stable |
+| age_years = total_runtime_hours / 22 / 365 | No longer derived from install_date |
+| criteria_scoring.py receives aggregator output with same variable names | No changes needed to scoring logic |
+| Full AHP weight vector [w1-w5] as 5 separate features | Never collapse to scalar |
+| Weighted score vector [w1*s1 ... w5*s5] as 5 separate features | Never collapse to scalar |
+| ANTHROPIC_API_KEY always from .env via python-dotenv | Never hardcode |
+| CR > 0.10 blocks RUL prediction | Invalid weights must not feed the ML model |
+| RUL recalculates when weights or manual scores change | Everything must stay dynamic |
+| RULExplanation fetches on demand only | Avoid excessive Anthropic API calls |
+| C1 default = 7, C4 default = 6 | Grounded in KSB Calio operational context |
+| C1 and C4 user input is always 1-10 | convert_to_saaty() handles conversion internally |
+| predict_adjusted() applies AHP risk adjustment | R_asset = (risk_factor-1)/8, RUL *= (1-R_asset) |
 
 ---
 
 ## Key Conventions
 
-- All Python files use snake_case
-- All React files use PascalCase for components, camelCase for hooks/utils
-- Internal scoring always 1-10; output always 1-9 (Saaty)
-- Higher score = higher risk across all criteria (consistent direction)
-- CR > 0.10 must surface a warning to the user, never silently proceed
-- `clamp()` and `convert_to_saaty()` live in `criteria_scoring.py` and are imported where needed
+- All Python files: snake_case
+- All React components: PascalCase. Hooks and utils: camelCase
+- Internal scoring: 1-10. AHP output: 1-9 Saaty scale
+- Higher score = higher risk across all 5 criteria
+- CR > 0.10 must always surface a warning -- never silently proceed
+- clamp() and convert_to_saaty() live in ahp/criteria_scoring.py
+- No em dashes in UI
+- RUL displayed in months in the UI (rul_years * 12), backend always returns years
+- RUL color thresholds: green > 120mo, yellow 60-120mo, red < 60mo
+- Progress bar max = 240 months (20 years * 12)

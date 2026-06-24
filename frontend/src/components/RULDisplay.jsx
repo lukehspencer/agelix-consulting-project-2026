@@ -1,8 +1,8 @@
-const EXPECTED_LIFESPAN = 20
+const EXPECTED_LIFESPAN_MONTHS = 240
 
-function rulColor(rul) {
-  if (rul > 10) return 'rul-green'
-  if (rul >= 5) return 'rul-yellow'
+function rulColor(months) {
+  if (months > 120) return 'rul-green'
+  if (months >= 60) return 'rul-yellow'
   return 'rul-red'
 }
 
@@ -12,7 +12,7 @@ export default function RULDisplay({ assets, rulPredictions, isLoadingPrediction
       <section className="card rul-display">
         <h2 className="section-title">Remaining Useful Life (RUL) Predictions</h2>
         <div className="rul-cr-warning">
-          Recalculate AHP matrix to unlock RUL predictions
+          Recalculate AHP matrix to unlock RUL predictions.
         </div>
       </section>
     )
@@ -29,20 +29,27 @@ export default function RULDisplay({ assets, rulPredictions, isLoadingPrediction
 
   if (!Object.keys(rulPredictions).length) return null
 
+  const sorted = [...assets]
+    .filter(a => rulPredictions[a.asset_id])
+    .sort((a, b) => (rulPredictions[a.asset_id]?.rul_years ?? 0) - (rulPredictions[b.asset_id]?.rul_years ?? 0))
+
   return (
     <section className="card rul-display">
       <h2 className="section-title">Remaining Useful Life (RUL) Predictions</h2>
       <p className="section-sub">
-        XGBoost predicted RUL per pump based on current AHP weights and asset condition.
+        XGBoost predicted RUL per pump, adjusted by AHP risk factor. Most critical first.
       </p>
 
       <div className="rul-grid">
-        {assets.map(asset => {
+        {sorted.map(asset => {
           const pred = rulPredictions[asset.asset_id]
           if (!pred) return null
 
-          const pct = Math.min((pred.rul_years / EXPECTED_LIFESPAN) * 100, 100)
-          const colorClass = rulColor(pred.rul_years)
+          const months = pred.rul_years * 12
+          const ciLowMonths = pred.ci_low * 12
+          const ciHighMonths = pred.ci_high * 12
+          const pct = Math.min((months / EXPECTED_LIFESPAN_MONTHS) * 100, 100)
+          const colorClass = rulColor(months)
 
           return (
             <div key={asset.asset_id} className={`rul-card ${colorClass}`}>
@@ -57,8 +64,8 @@ export default function RULDisplay({ assets, rulPredictions, isLoadingPrediction
                 />
               </div>
               <div className="rul-values">
-                <span className="rul-main">{pred.rul_years.toFixed(1)} years</span>
-                <span className="rul-ci">{pred.ci_low.toFixed(1)} to {pred.ci_high.toFixed(1)} years</span>
+                <span className="rul-main">{months.toFixed(1)} months</span>
+                <span className="rul-ci">{ciLowMonths.toFixed(1)} to {ciHighMonths.toFixed(1)} months</span>
               </div>
             </div>
           )

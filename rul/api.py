@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from rul.feature_engineering import build_feature_vector, validate_feature_vector
-from rul.ml_rul_model import predict
+from rul.ml_rul_model import predict_adjusted
 from rul.rul_explainer import explain
 
 router = APIRouter(prefix="/rul", tags=["RUL"])
@@ -61,9 +61,11 @@ def predict_rul(body: PredictInput) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    risk_factor = sum(w * s for w, s in zip(body.weights, body.scores))
+
     try:
-        result = predict(vector)
-    except FileNotFoundError as exc:
+        result = predict_adjusted(vector, risk_factor)
+    except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
     return {

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import AHPMatrix from './AHPMatrix'
+import ManualScoreInputs from './ManualScoreInputs'
 import WeightDisplay from './WeightDisplay'
 import AssetRegistry from './AssetRegistry'
 import RiskRanking from './RiskRanking'
@@ -26,6 +27,12 @@ export default function Dashboard() {
   const [history, setHistory] = useState([])
   const pendingLogRef = useRef(null)
 
+  const [manualScores, setManualScores] = useState({ c1: 7, c4: 6 })
+  const [manualAssets, setManualAssets] = useState(null)
+  const [manualLoading, setManualLoading] = useState(false)
+  const [hasManualOverride, setHasManualOverride] = useState(false)
+  const manualPendingLogRef = useRef(false)
+
   const [customPumps, setCustomPumps] = useState(null)
   const [customAssets, setCustomAssets] = useState(null)
   const [uploadInfo, setUploadInfo] = useState(null)
@@ -38,8 +45,11 @@ export default function Dashboard() {
 
   const { assets: defaultAssets, loading: defaultLoading, error: defaultError } = useRiskScores(weights)
 
-  const assets = customAssets ?? defaultAssets
-  const loading = customPumps ? scoringCustom : defaultLoading
+  const baseAssets = hasManualOverride ? (manualAssets ?? []) : defaultAssets
+  const baseLoading = hasManualOverride ? manualLoading : defaultLoading
+
+  const assets = customAssets ?? baseAssets
+  const loading = customPumps ? scoringCustom : baseLoading
   const error = customPumps ? scoringError : defaultError
 
   const cr = ahpResult?.cr ?? null
@@ -54,6 +64,7 @@ export default function Dashboard() {
       timestamp: new Date(),
       weights: data.weights,
       cr: data.cr,
+      note: 'AHP matrix updated',
     }
   }
 
@@ -67,6 +78,52 @@ export default function Dashboard() {
       pumpScores: sorted.map(a => ({ id: a.asset_id, risk: a.risk_factor })),
     }, ...prev])
   }, [assets, loading])
+
+  function handleManualScoresUpdate(c1, c4) {
+    setManualScores({ c1, c4 })
+    setHasManualOverride(true)
+    manualPendingLogRef.current = `C1=${c1}, C4=${c4}`
+  }
+
+  useEffect(() => {
+    if (!hasManualOverride) return
+
+    let cancelled = false
+    setManualLoading(true)
+
+    async function load() {
+      const w = weights ?? EQUAL_WEIGHTS
+      const params = w.map(v => `weights=${v}`).join('&')
+      const url = `/ahp/assets?${params}&c1_score=${manualScores.c1}&c4_score=${manualScores.c4}`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`Server error ${res.status}`)
+      const data = await res.json()
+
+      if (cancelled) return
+
+      setManualAssets(data)
+      setManualLoading(false)
+
+      if (manualPendingLogRef.current) {
+        const note = manualPendingLogRef.current
+        manualPendingLogRef.current = false
+        const sorted = [...data].sort((a, b) => a.asset_id.localeCompare(b.asset_id))
+        setHistory(prev => [{
+          timestamp: new Date(),
+          weights: [...w],
+          cr: ahpResult?.cr ?? 0,
+          pumpScores: sorted.map(a => ({ id: a.asset_id, risk: a.risk_factor })),
+          note: `Manual override: ${note}`,
+        }, ...prev])
+      }
+    }
+
+    load().catch(err => {
+      if (!cancelled) setManualLoading(false)
+    })
+
+    return () => { cancelled = true }
+  }, [hasManualOverride, manualScores.c1, manualScores.c4, weightsKey])
 
   useEffect(() => {
     if (!customPumps) {
@@ -84,31 +141,24 @@ export default function Dashboard() {
       const today = new Date()
 
       const enriched = await Promise.all(customPumps.map(async pump => {
-        const installDate = new Date(pump.install_date)
-        const lastMaintDate = new Date(pump.last_maintenance_date)
-        const age_years = +((today - installDate) / (365.25 * 86400000)).toFixed(2)
-        const usage_intensity_pct = +(pump.actual_flow_rate_gpm / pump.rated_flow_rate_gpm * 100).toFixed(1)
-        const days_since_maintenance = Math.round((today - lastMaintDate) / 86400000)
-
-        const criticality_raw = 1 + (pump.score_criticality - 1) * (9 / 8)
-        const downtime_impact_raw = 1 + (pump.score_downtime_impact - 1) * (9 / 8)
+        const age_years = +(pump.total_runtime_hours / 22 / 365).toFixed(2)
 
         const res = await fetch('/ahp/score-asset', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             asset_id: pump.asset_id,
-            criticality_raw,
+            criticality_raw: pump.criticality_raw,
             condition_score: pump.condition_score,
             vibration_level: pump.vibration_level,
             seal_condition: pump.seal_condition,
             bearing_condition: pump.bearing_condition,
             age_years,
-            expected_lifespan_years: pump.expected_lifespan_years,
+            expected_lifespan_years: pump.expected_lifespan_years ?? 20,
             number_of_failures_last_3yr: Math.round(pump.number_of_failures_last_3yr),
-            days_since_maintenance,
+            days_since_maintenance: pump.days_since_maintenance,
             maintenance_frequency_days: pump.maintenance_frequency_days,
-            downtime_impact_raw,
+            downtime_impact_raw: pump.downtime_impact_raw,
             maintenance_cost_trend: pump.maintenance_cost_trend,
             maintenance_cost_last_year: pump.maintenance_cost_last_year,
           }),
@@ -116,7 +166,7 @@ export default function Dashboard() {
         if (!res.ok) throw new Error(`Scoring failed for ${pump.asset_id}`)
         const scores = await res.json()
 
-        return { ...pump, ...scores, age_years, usage_intensity_pct, days_since_maintenance }
+        return { ...pump, ...scores, age_years, expected_lifespan_years: pump.expected_lifespan_years ?? 20 }
       }))
 
       if (cancelled) return
@@ -179,6 +229,12 @@ export default function Dashboard() {
   return (
     <>
       <AHPMatrix onWeightsUpdate={handleWeightsUpdate} />
+
+      <ManualScoreInputs
+        c1Value={manualScores.c1}
+        c4Value={manualScores.c4}
+        onManualScoresUpdate={handleManualScoresUpdate}
+      />
 
       <DataUpload
         onDataLoaded={handleDataLoaded}
@@ -259,7 +315,7 @@ export default function Dashboard() {
             <div>
               <h2 className="section-title">Score History Log</h2>
               <p className="section-sub">
-                Each row records a matrix submission with the resulting weights, pump risk scores, and CR.
+                Each row records a weight or score change with the resulting pump risk scores and CR.
               </p>
             </div>
             <button className="btn-clear" onClick={() => setHistory([])}>

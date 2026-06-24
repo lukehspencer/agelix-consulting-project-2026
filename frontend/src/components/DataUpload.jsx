@@ -38,7 +38,7 @@ export default function DataUpload({ onDataLoaded, onReset, uploadInfo }) {
           <p className="upload-indicator">
             {uploadInfo
               ? <>Using uploaded data: <strong>{uploadInfo.filename}</strong> ({uploadInfo.count} pumps)</>
-              : 'Using default data (optional: upload your own)'}
+              : 'Using default KSB Calio telemetry data (optional: upload your own)'}
           </p>
         </div>
         <div className="upload-actions">
@@ -62,6 +62,14 @@ export default function DataUpload({ onDataLoaded, onReset, uploadInfo }) {
           </a>
         </div>
       </div>
+
+      <p className="upload-hint">
+        Rolling features (rolling_vibration_mean, rolling_vibration_std,
+        rolling_winding_temp_mean, rolling_spm_temp_mean, rolling_current_mean)
+        should be the 7-day mean and std dev of your sensor readings prior to
+        the snapshot date. voltage_anomaly_count is the number of days in the
+        last 30 days where supply voltage was outside 207-253V.
+      </p>
 
       {errors && (
         <div className="upload-errors">

@@ -1,6 +1,3 @@
-import json
-from pathlib import Path
-
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
@@ -8,15 +5,7 @@ from pydantic import BaseModel, field_validator
 from ahp.ahp_engine import run_ahp
 from ahp.criteria_scoring import score_asset
 from ahp.risk_calculator import compute_risk_factor, rank_assets
-
-# ---------------------------------------------------------------------------
-# Pump data — loaded once at import time, shared across all requests
-# ---------------------------------------------------------------------------
-
-_DATA_PATH = Path(__file__).parent.parent / "data" / "pumps.json"
-
-with _DATA_PATH.open(encoding="utf-8") as _f:
-    _PUMPS: list[dict] = json.load(_f)
+from data.telemetry_aggregator import get_pump_data
 
 # ---------------------------------------------------------------------------
 # App + CORS
@@ -115,18 +104,29 @@ def risk_factor_endpoint(body: RiskFactorInput) -> dict:
 @app.get("/ahp/assets")
 def get_assets(
     weights: list[float] = Query(default=_EQUAL_WEIGHTS),
+    c1_score: int = Query(default=7, ge=1, le=10),
+    c4_score: int = Query(default=6, ge=1, le=10),
 ) -> list[dict]:
-    """Return all pumps ranked highest → lowest by risk factor.
+    """Return all pumps ranked highest to lowest by risk factor.
 
-    Pass the current AHP weight vector as repeated query params:
-      GET /ahp/assets?weights=0.3&weights=0.25&weights=0.2&weights=0.15&weights=0.1
+    Query params:
+      weights:  repeated float (5 values, default equal 0.2 each)
+      c1_score: int 1-10 (Criticality manual input, default 7)
+      c4_score: int 1-10 (Downtime Impact manual input, default 6)
 
-    Defaults to equal weights (0.2 each) when no weights are provided,
-    so the endpoint is usable before the user has submitted a matrix.
+    Loads pump data from CEO telemetry via telemetry_aggregator,
+    scores each pump with criteria_scoring, then ranks by risk factor.
     """
     if len(weights) != 5:
         raise HTTPException(
             status_code=400,
             detail=f"Expected 5 weights, got {len(weights)}.",
         )
-    return rank_assets(weights, _PUMPS)
+
+    raw_pumps = get_pump_data(c1_score=c1_score, c4_score=c4_score)
+    scored_pumps = []
+    for pump in raw_pumps:
+        scores = score_asset(pump)
+        scored_pumps.append({**pump, **scores})
+
+    return rank_assets(weights, scored_pumps)

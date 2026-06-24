@@ -36,7 +36,7 @@ export default function RULExplanation({
                 <div>
                   <span className="explanation-name">{asset.asset_name}</span>
                   <span className="explanation-meta">
-                    RUL: {pred.rul_years.toFixed(1)} yr | Risk: {asset.risk_factor.toFixed(2)}
+                    RUL: {(pred.rul_years * 12).toFixed(1)} months | Risk: {asset.risk_factor.toFixed(2)}
                   </span>
                 </div>
                 <button
@@ -52,7 +52,7 @@ export default function RULExplanation({
                 {loading && <div className="explanation-spinner">Analyzing pump data...</div>}
                 {!loading && !explanation && (
                   <p className="explanation-placeholder">
-                    Click Generate Explanation to get an AI-powered maintenance recommendation for this pump
+                    Click Generate Explanation to get an AI-powered maintenance recommendation for this pump.
                   </p>
                 )}
                 {!loading && explanation && <ExplanationText text={explanation} />}

@@ -1,23 +1,25 @@
 const REQUIRED_FIELDS = [
   'asset_id', 'asset_name', 'manufacturer', 'model_number', 'location',
-  'install_date', 'expected_lifespan_years',
-  'rated_flow_rate_gpm', 'actual_flow_rate_gpm', 'operating_hours_per_day', 'total_runtime_hours',
-  'condition_score', 'vibration_level', 'temperature_celsius', 'seal_condition', 'bearing_condition',
-  'last_maintenance_date', 'maintenance_frequency_days', 'maintenance_cost_last_year',
-  'maintenance_cost_trend', 'number_of_failures_last_3yr',
-  'score_criticality', 'score_condition', 'score_failure_probability',
-  'score_downtime_impact', 'score_maintenance_cost_trend',
-  'age_years', 'usage_intensity_pct', 'days_since_maintenance',
+  'total_runtime_hours', 'operating_hours_per_day',
+  'condition_score', 'vibration_level', 'temperature_celsius',
+  'seal_condition', 'bearing_condition',
+  'number_of_failures_last_3yr', 'days_since_maintenance',
+  'maintenance_frequency_days', 'maintenance_cost_last_year',
+  'maintenance_cost_trend', 'criticality_raw', 'downtime_impact_raw',
+  'rolling_vibration_mean', 'rolling_vibration_std',
+  'rolling_winding_temp_mean', 'rolling_spm_temp_mean',
+  'rolling_current_mean', 'voltage_anomaly_count', 'true_rul_days',
 ]
 
 const NUMERIC_FIELDS = new Set([
-  'expected_lifespan_years', 'rated_flow_rate_gpm', 'actual_flow_rate_gpm',
-  'operating_hours_per_day', 'total_runtime_hours', 'condition_score',
-  'temperature_celsius', 'maintenance_frequency_days', 'maintenance_cost_last_year',
-  'number_of_failures_last_3yr',
-  'score_criticality', 'score_condition', 'score_failure_probability',
-  'score_downtime_impact', 'score_maintenance_cost_trend',
-  'age_years', 'usage_intensity_pct', 'days_since_maintenance',
+  'total_runtime_hours', 'operating_hours_per_day',
+  'condition_score', 'temperature_celsius',
+  'number_of_failures_last_3yr', 'days_since_maintenance',
+  'maintenance_frequency_days', 'maintenance_cost_last_year',
+  'criticality_raw', 'downtime_impact_raw',
+  'rolling_vibration_mean', 'rolling_vibration_std',
+  'rolling_winding_temp_mean', 'rolling_spm_temp_mean',
+  'rolling_current_mean', 'voltage_anomaly_count', 'true_rul_days',
 ])
 
 const ENUM_RULES = {
@@ -26,8 +28,6 @@ const ENUM_RULES = {
   bearing_condition: ['Good', 'Worn', 'Failed'],
   maintenance_cost_trend: ['Increasing', 'Stable', 'Decreasing'],
 }
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 function parseCSVLine(line) {
   const values = []
@@ -114,18 +114,32 @@ function validatePumps(pumps) {
     if (typeof pump.condition_score === 'number' && (pump.condition_score < 1 || pump.condition_score > 10)) {
       errors.push(`${label}: condition_score must be between 1 and 10, got ${pump.condition_score}`)
     }
+    if (typeof pump.criticality_raw === 'number' && (pump.criticality_raw < 1 || pump.criticality_raw > 10)) {
+      errors.push(`${label}: criticality_raw must be between 1 and 10, got ${pump.criticality_raw}`)
+    }
+    if (typeof pump.downtime_impact_raw === 'number' && (pump.downtime_impact_raw < 1 || pump.downtime_impact_raw > 10)) {
+      errors.push(`${label}: downtime_impact_raw must be between 1 and 10, got ${pump.downtime_impact_raw}`)
+    }
+    if (typeof pump.total_runtime_hours === 'number' && pump.total_runtime_hours <= 0) {
+      errors.push(`${label}: total_runtime_hours must be > 0, got ${pump.total_runtime_hours}`)
+    }
+    if (typeof pump.rolling_vibration_mean === 'number' && pump.rolling_vibration_mean < 0) {
+      errors.push(`${label}: rolling_vibration_mean must be >= 0, got ${pump.rolling_vibration_mean}`)
+    }
+    if (typeof pump.rolling_vibration_std === 'number' && pump.rolling_vibration_std < 0) {
+      errors.push(`${label}: rolling_vibration_std must be >= 0, got ${pump.rolling_vibration_std}`)
+    }
+    if (typeof pump.voltage_anomaly_count === 'number' && pump.voltage_anomaly_count < 0) {
+      errors.push(`${label}: voltage_anomaly_count must be >= 0, got ${pump.voltage_anomaly_count}`)
+    }
+    if (typeof pump.true_rul_days === 'number' && pump.true_rul_days < 0) {
+      errors.push(`${label}: true_rul_days must be >= 0, got ${pump.true_rul_days}`)
+    }
 
     for (const [field, allowed] of Object.entries(ENUM_RULES)) {
       if (!allowed.includes(pump[field])) {
         errors.push(`${label}: "${field}" must be one of [${allowed.join(', ')}], got "${pump[field]}"`)
       }
-    }
-
-    if (!DATE_RE.test(pump.install_date) || isNaN(new Date(pump.install_date).getTime())) {
-      errors.push(`${label}: install_date must be YYYY-MM-DD, got "${pump.install_date}"`)
-    }
-    if (!DATE_RE.test(pump.last_maintenance_date) || isNaN(new Date(pump.last_maintenance_date).getTime())) {
-      errors.push(`${label}: last_maintenance_date must be YYYY-MM-DD, got "${pump.last_maintenance_date}"`)
     }
   })
 
@@ -164,13 +178,13 @@ export async function parseUploadedFile(file) {
 export function downloadTemplate() {
   const headers = REQUIRED_FIELDS.join(',')
   const example = [
-    'PUMP-001', 'Example Cooling Pump', 'Flowserve', 'PVXM-6x8', '"Plant A / Line 1"',
-    '2015-06-01', '20',
-    '500', '380', '18', '85000',
-    '6', 'Normal', '65', 'Good', 'Worn',
-    '2026-04-15', '120', '3200', 'Stable', '2',
-    '5.44', '5.44', '4.56', '5.44', '5.44',
-    '11.0', '76.0', '67',
+    'KSB-CALIO-3040-9000', '"KSB Calio 3040 - Unit 9000"', 'KSB', 'Calio 30-40', '"Plant 2"',
+    '8500', '22',
+    '6', 'High', '68.4', 'Worn', 'Good',
+    '1', '45', '90', '2500', 'Stable',
+    '7', '6',
+    '1.8', '0.4', '68.4', '72.1', '0.61',
+    '2', '280',
   ].join(',')
   const csv = headers + '\n' + example + '\n'
   const blob = new Blob([csv], { type: 'text/csv' })

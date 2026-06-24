@@ -15,7 +15,11 @@ export function useRUL(weights, cr, assets) {
 
     if (cr === null || cr === undefined || cr > 0.10) {
       setRulPredictions({})
-      setError(cr > 0.10 ? 'AHP matrix is inconsistent (CR > 0.10). Revise pairwise comparisons before requesting RUL predictions.' : null)
+      if (cr > 0.10) {
+        setError('AHP Consistency Ratio exceeds 0.10. Fix the pairwise matrix to unlock RUL predictions.')
+      } else {
+        setError(null)
+      }
       return
     }
 
