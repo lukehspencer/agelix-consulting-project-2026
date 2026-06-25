@@ -19,7 +19,7 @@ All pump data comes from CEO-provided telemetry (1095 days / 3 years of daily se
 | Tool | Version |
 |---|---|
 | Python | 3.11+ |
-| Node.js | 18+ |
+| Node.js | 18+ | 
 | npm | 9+ |
 | libomp | Required on macOS for XGBoost (`brew install libomp`) |
 
@@ -87,6 +87,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 cd frontend
 npm run dev
 ```
+
+<!-- To run npm on windows: & "C:\Program Files\nodejs\npm.cmd" -->
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
