@@ -89,6 +89,7 @@ npm run dev
 ```
 
 <!-- To run npm on windows: & "C:\Program Files\nodejs\npm.cmd" -->
+<!-- To run node and npm keywords set $env:PATH += ";C:\Program Files\nodejs\" -->
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
