@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import AHPMatrix from './AHPMatrix'
 import ManualScoreInputs from './ManualScoreInputs'
 import WeightDisplay from './WeightDisplay'
@@ -9,8 +9,12 @@ import RiskScatterPlot from './RiskScatterPlot'
 import RULDisplay from './RULDisplay'
 import RULExplanation from './RULExplanation'
 import DataUpload from './DataUpload'
+import UploadPanel from './UploadPanel'
+import DynamicAssetTable from './DynamicAssetTable'
+import DynamicAHPMatrix from './DynamicAHPMatrix'
 import { useRiskScores } from '../hooks/useRiskScores'
 import { useRUL } from '../hooks/useRUL'
+import useUpload from '../hooks/useUpload'
 
 const SCORE_KEYS = [
   'score_criticality', 'score_condition', 'score_failure_probability',
@@ -22,7 +26,28 @@ const CRITERIA_LABELS = [
 ]
 const EQUAL_WEIGHTS = [0.2, 0.2, 0.2, 0.2, 0.2]
 
+function buildSensorContext(asset, criteriaConfig) {
+  const ctx = {}
+  if (!criteriaConfig?.criteria) return ctx
+  for (const crit of criteriaConfig.criteria) {
+    if (crit.manual_input) continue
+    const col = crit.primary_column
+    if (col) {
+      const key = `rolling_${col}_mean`
+      if (key in asset) ctx[col] = asset[key]
+    }
+    for (const sc of crit.secondary_columns ?? []) {
+      const key = `rolling_${sc}_mean`
+      if (key in asset) ctx[sc] = asset[key]
+    }
+  }
+  return ctx
+}
+
 export default function Dashboard() {
+  const [mode, setMode] = useState('default')
+
+  // --- Existing Phase 1+2 state (unchanged) ---
   const [ahpResult, setAhpResult] = useState(null)
   const [history, setHistory] = useState([])
   const pendingLogRef = useRef(null)
@@ -226,138 +251,215 @@ export default function Dashboard() {
   const highestRisk = assets.length ? assets[0] : null
   const highRiskCount = assets.filter(a => a.risk_factor > 7).length
 
+  // --- Uploaded mode state ---
+  const [uploadedPredictedAssets, setUploadedPredictedAssets] = useState([])
+  const [uploadedCriteriaConfig, setUploadedCriteriaConfig] = useState(null)
+  const [uploadedExplanations, setUploadedExplanations] = useState({})
+  const [uploadedAhpResult, setUploadedAhpResult] = useState(null)
+
+  const { explainAsset } = useUpload()
+
+  const handleAssetsReady = useCallback((assetsData, config) => {
+    setUploadedPredictedAssets(assetsData)
+    setUploadedCriteriaConfig(config)
+    setUploadedExplanations({})
+  }, [])
+
+  const handleDynamicExplain = useCallback(async (asset) => {
+    if (!uploadedCriteriaConfig) return
+    const sensorContext = buildSensorContext(asset, uploadedCriteriaConfig)
+
+    const explanation = await explainAsset({
+      ...asset,
+      asset_type: uploadedCriteriaConfig.asset_type,
+      failure_modes: uploadedCriteriaConfig.failure_modes,
+      sensor_context: sensorContext,
+    })
+
+    setUploadedExplanations(prev => ({ ...prev, [asset.asset_id]: explanation }))
+  }, [uploadedCriteriaConfig, explainAsset])
+
+  const ahpValid = ahpResult?.valid ?? false
+
   return (
     <>
-      <AHPMatrix onWeightsUpdate={handleWeightsUpdate} />
+      {/* Mode Toggle */}
+      <div className="mode-toggle">
+        <button
+          className={`mode-btn${mode === 'default' ? ' mode-btn-active' : ''}`}
+          onClick={() => setMode('default')}
+        >
+          Default KSB Fleet
+        </button>
+        <button
+          className={`mode-btn${mode === 'uploaded' ? ' mode-btn-active' : ''}`}
+          onClick={() => setMode('uploaded')}
+        >
+          Upload Custom Data
+        </button>
+      </div>
 
-      <ManualScoreInputs
-        c1Value={manualScores.c1}
-        c4Value={manualScores.c4}
-        onManualScoresUpdate={handleManualScoresUpdate}
-      />
+      {mode === 'default' && (
+        <>
+          <AHPMatrix onWeightsUpdate={handleWeightsUpdate} />
 
-      <DataUpload
-        onDataLoaded={handleDataLoaded}
-        onReset={handleDataReset}
-        uploadInfo={uploadInfo}
-      />
+          <ManualScoreInputs
+            c1Value={manualScores.c1}
+            c4Value={manualScores.c4}
+            onManualScoresUpdate={handleManualScoresUpdate}
+          />
 
-      <section className="kpi-grid">
-        <div className="kpi-card">
-          <span className="kpi-label">Avg Risk Score</span>
-          <span className="kpi-value">{assets.length ? avgRisk.toFixed(2) : '-'}</span>
-        </div>
+          <DataUpload
+            onDataLoaded={handleDataLoaded}
+            onReset={handleDataReset}
+            uploadInfo={uploadInfo}
+          />
 
-        <div className="kpi-card">
-          <span className="kpi-label">Highest Risk Pump</span>
-          <span className="kpi-value kpi-value-sm">
-            {highestRisk
-              ? <>{highestRisk.asset_name} <span className="kpi-accent">({highestRisk.risk_factor.toFixed(2)})</span></>
-              : '-'}
-          </span>
-        </div>
-
-        <div className="kpi-card">
-          <span className="kpi-label">High Risk Pumps (&gt;7)</span>
-          <span className="kpi-value">{assets.length ? highRiskCount : '-'}</span>
-        </div>
-
-        <div className={`kpi-card${ahpResult ? (ahpResult.valid ? ' kpi-cr-ok' : ' kpi-cr-bad') : ''}`}>
-          <span className="kpi-label">Consistency Ratio (CR)</span>
-          <span className="kpi-value">
-            {ahpResult
-              ? <><span className="cr-status-icon">{ahpResult.valid ? '✓' : '⚠'}</span> {ahpResult.cr.toFixed(4)}</>
-              : '-'}
-          </span>
-        </div>
-      </section>
-
-      <WeightDisplay weights={weights} />
-
-      {error && (
-        <div className="alert alert-error">
-          <strong>Error loading assets:</strong> {error}
-        </div>
-      )}
-
-      <AssetRegistry assets={assets} loading={loading} />
-
-      <RiskRanking assets={assets} />
-
-      <CriteriaContribution assets={assets} />
-
-      <RiskScatterPlot assets={assets} />
-
-      <RULDisplay
-        assets={assets}
-        rulPredictions={rulPredictions}
-        isLoadingPredictions={isLoadingPredictions}
-        cr={cr}
-      />
-
-      <RULExplanation
-        assets={assets}
-        rulPredictions={rulPredictions}
-        rulExplanations={rulExplanations}
-        fetchExplanation={fetchExplanation}
-        isLoadingExplanation={isLoadingExplanation}
-      />
-
-      {rulError && (
-        <div className="alert alert-error">
-          <strong>RUL Error:</strong> {rulError}
-        </div>
-      )}
-
-      {history.length > 0 && (
-        <section className="card history-log">
-          <div className="history-header">
-            <div>
-              <h2 className="section-title">Score History Log</h2>
-              <p className="section-sub">
-                Each row records a weight or score change with the resulting pump risk scores and CR.
-              </p>
+          <section className="kpi-grid">
+            <div className="kpi-card">
+              <span className="kpi-label">Avg Risk Score</span>
+              <span className="kpi-value">{assets.length ? avgRisk.toFixed(2) : '-'}</span>
             </div>
-            <button className="btn-clear" onClick={() => setHistory([])}>
-              Clear History
-            </button>
-          </div>
-          <div className="registry-scroll">
-            <table className="history-table">
-              <thead>
-                <tr>
-                  <th>Timestamp</th>
-                  <th>W1</th>
-                  <th>W2</th>
-                  <th>W3</th>
-                  <th>W4</th>
-                  <th>W5</th>
-                  {history[0].pumpScores.map(p => (
-                    <th key={p.id}>{p.id}</th>
-                  ))}
-                  <th>CR</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((entry, i) => (
-                  <tr key={i}>
-                    <td className="td-ts">
-                      {entry.timestamp.toLocaleString()}
-                      {entry.note && <span className="history-note">{entry.note}</span>}
-                    </td>
-                    {entry.weights.map((w, j) => (
-                      <td key={j} className="td-hw">{w.toFixed(2)}</td>
+
+            <div className="kpi-card">
+              <span className="kpi-label">Highest Risk Pump</span>
+              <span className="kpi-value kpi-value-sm">
+                {highestRisk
+                  ? <>{highestRisk.asset_name} <span className="kpi-accent">({highestRisk.risk_factor.toFixed(2)})</span></>
+                  : '-'}
+              </span>
+            </div>
+
+            <div className="kpi-card">
+              <span className="kpi-label">High Risk Pumps (&gt;7)</span>
+              <span className="kpi-value">{assets.length ? highRiskCount : '-'}</span>
+            </div>
+
+            <div className={`kpi-card${ahpResult ? (ahpResult.valid ? ' kpi-cr-ok' : ' kpi-cr-bad') : ''}`}>
+              <span className="kpi-label">Consistency Ratio (CR)</span>
+              <span className="kpi-value">
+                {ahpResult
+                  ? <><span className="cr-status-icon">{ahpResult.valid ? '✓' : '⚠'}</span> {ahpResult.cr.toFixed(4)}</>
+                  : '-'}
+              </span>
+            </div>
+          </section>
+
+          <WeightDisplay weights={weights} />
+
+          {error && (
+            <div className="alert alert-error">
+              <strong>Error loading assets:</strong> {error}
+            </div>
+          )}
+
+          <AssetRegistry assets={assets} loading={loading} />
+
+          <RiskRanking assets={assets} />
+
+          <CriteriaContribution assets={assets} />
+
+          <RiskScatterPlot assets={assets} />
+
+          <RULDisplay
+            assets={assets}
+            rulPredictions={rulPredictions}
+            isLoadingPredictions={isLoadingPredictions}
+            cr={cr}
+          />
+
+          <RULExplanation
+            assets={assets}
+            rulPredictions={rulPredictions}
+            rulExplanations={rulExplanations}
+            fetchExplanation={fetchExplanation}
+            isLoadingExplanation={isLoadingExplanation}
+          />
+
+          {rulError && (
+            <div className="alert alert-error">
+              <strong>RUL Error:</strong> {rulError}
+            </div>
+          )}
+
+          {history.length > 0 && (
+            <section className="card history-log">
+              <div className="history-header">
+                <div>
+                  <h2 className="section-title">Score History Log</h2>
+                  <p className="section-sub">
+                    Each row records a weight or score change with the resulting pump risk scores and CR.
+                  </p>
+                </div>
+                <button className="btn-clear" onClick={() => setHistory([])}>
+                  Clear History
+                </button>
+              </div>
+              <div className="registry-scroll">
+                <table className="history-table">
+                  <thead>
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>W1</th>
+                      <th>W2</th>
+                      <th>W3</th>
+                      <th>W4</th>
+                      <th>W5</th>
+                      {history[0].pumpScores.map(p => (
+                        <th key={p.id}>{p.id}</th>
+                      ))}
+                      <th>CR</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.map((entry, i) => (
+                      <tr key={i}>
+                        <td className="td-ts">
+                          {entry.timestamp.toLocaleString()}
+                          {entry.note && <span className="history-note">{entry.note}</span>}
+                        </td>
+                        {entry.weights.map((w, j) => (
+                          <td key={j} className="td-hw">{w.toFixed(2)}</td>
+                        ))}
+                        {entry.pumpScores.map(p => (
+                          <td key={p.id} className="td-hw">{p.risk.toFixed(2)}</td>
+                        ))}
+                        <td className="td-hw">{entry.cr ? entry.cr.toFixed(4) : '-'}</td>
+                      </tr>
                     ))}
-                    {entry.pumpScores.map(p => (
-                      <td key={p.id} className="td-hw">{p.risk.toFixed(2)}</td>
-                    ))}
-                    <td className="td-hw">{entry.cr ? entry.cr.toFixed(4) : '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </>
+      )}
+
+      {mode === 'uploaded' && (
+        <>
+          <UploadPanel
+            onAssetsReady={handleAssetsReady}
+            ahpValid={uploadedAhpResult?.valid ?? false}
+            ahpWeights={uploadedAhpResult?.weights ?? null}
+            ahpCr={uploadedAhpResult?.cr ?? null}
+          />
+
+          {uploadedCriteriaConfig && (
+            <DynamicAHPMatrix
+              criteriaNames={uploadedCriteriaConfig.criteria.map(c => c.name)}
+              onWeightsUpdate={setUploadedAhpResult}
+            />
+          )}
+
+          {uploadedPredictedAssets.length > 0 && (
+            <DynamicAssetTable
+              assets={uploadedPredictedAssets}
+              criteriaConfig={uploadedCriteriaConfig}
+              onExplain={handleDynamicExplain}
+              explanations={uploadedExplanations}
+            />
+          )}
+        </>
       )}
     </>
   )

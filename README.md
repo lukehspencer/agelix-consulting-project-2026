@@ -1,69 +1,87 @@
-# Asset Management Dashboard
+# Assets Maestro -- Predictive Asset Management Dashboard
 
-An asset management dashboard for **KSB Calio 30-40** centrifugal pump assets, built as an internship project for **Agelix Consulting** to extend the *Assets Maestro* platform.
+> An asset risk scoring and remaining useful life (RUL) prediction dashboard for industrial equipment, powered by AHP-based risk analysis and XGBoost ML, with AI-generated maintenance explanations via the Anthropic API.
 
-## What it does
+---
 
-Users define relative importance weights across five risk criteria using an AHP (Analytic Hierarchy Process) pairwise comparison matrix. The system validates the matrix for consistency (CR <= 0.10), derives the weight vector, and applies it to 5 KSB Calio 30-40 pumps to produce a live risk ranking.
+## Overview
 
-An XGBoost ML model predicts Remaining Useful Life (RUL) per pump using a 24-feature input vector that combines raw telemetry, AHP weights, and weighted scores as engineered features. The RUL prediction is adjusted by the AHP risk factor. Claude (via the Anthropic API) generates plain language explanations of each prediction with recommended maintenance actions.
+The dashboard scores industrial assets using the Analytic Hierarchy Process (AHP) -- a structured method for multi-criteria risk ranking -- and predicts remaining useful life using a trained XGBoost model. Risk scores and RUL predictions update dynamically as the user adjusts the AHP pairwise comparison matrix. A GenAI explanation layer (Claude, via the Anthropic API) generates plain-English maintenance recommendations for each asset on demand.
 
-All pump data comes from CEO-provided telemetry (1095 days / 3 years of daily sensor readings per pump). Each pump is captured at a different lifecycle stage to show meaningful spread across the dashboard. C1 (Criticality) and C4 (Downtime Impact) are manual inputs with defaults of 7 and 6 respectively.
+The dashboard operates in two modes. The default mode loads a pre-configured fleet of 5 KSB Calio 30-40 centrifugal pump assets from operational telemetry provided by the client. The upload mode accepts any asset type -- the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria and scoring thresholds for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data.
 
-**Criteria:** Criticality . Condition . Failure Probability . Downtime Impact . Maintenance Cost Trend
+Built as an internship project for Agelix Consulting to extend their asset lifecycle management platform, Assets Maestro. The default asset class is the KSB Calio 30-40 glandless circulator pump.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| AHP Engine | Python, NumPy |
+| Telemetry Processing | Python, pandas, openpyxl |
+| ML Model | XGBoost, scikit-learn, joblib |
+| GenAI Layer | Anthropic API (claude-sonnet-4-6) |
+| Schema Inference | Anthropic API (claude-sonnet-4-6) |
+| API Layer | FastAPI, Uvicorn |
+| Frontend | React, Recharts |
+| Testing | pytest |
 
 ---
 
 ## Prerequisites
 
-| Tool | Version |
-|---|---|
-| Python | 3.11+ |
-| Node.js | 18+ | 
-| npm | 9+ |
-| libomp | Required on macOS for XGBoost (`brew install libomp`) |
+1. Python 3.11 or higher
+2. Node.js (LTS) and npm
+3. An Anthropic API key
+4. On macOS: `brew install libomp` (required for XGBoost)
 
 ---
 
 ## Setup
 
-### 1. Clone and create a virtual environment
+### Step 1 -- Clone the repository
 
 ```bash
-git clone <repo-url>
+git clone <repository-url>
 cd agelix-consulting-project-2026
-
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
 ```
 
-### 2. Install Python dependencies
+### Step 2 -- Install Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure environment
+### Step 3 -- Configure environment variables
 
 ```bash
 cp .env.example .env
-# Add your Anthropic API key for RUL explanations
 ```
 
-### 4. Generate data and train the ML model
+Open `.env` and set:
+```
+ANTHROPIC_API_KEY=your_key_here
+API_BASE_URL=http://localhost:8000
+```
+
+### Step 4 -- Generate the default fleet data
 
 ```bash
-# Generate 3-year telemetry + maintenance log from CEO's script
 python data/generate_maintenance_log.py
+```
 
-# Train XGBoost on 5440 telemetry samples, save rul/model.pkl
+This generates the KSB telemetry file and maintenance log in `data/raw/`. Required before starting the backend.
+
+### Step 5 -- Train the default fleet RUL model
+
+```bash
 python -m rul.train
 ```
 
-### 5. Install frontend dependencies
+Outputs `rul/model.pkl`. Required before starting the backend.
+
+### Step 6 -- Install frontend dependencies
 
 ```bash
 cd frontend
@@ -73,80 +91,122 @@ cd ..
 
 ---
 
-## Running
+## Running the Application
 
-Open two terminals.
+### Backend
 
-**Terminal 1. FastAPI backend**
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload
 ```
 
-**Terminal 2. React frontend**
+Runs at `http://localhost:8000`. API docs available at `http://localhost:8000/docs`.
+
+### Frontend
+
 ```bash
 cd frontend
 npm run dev
 ```
 
-<!-- To run npm on windows: & "C:\Program Files\nodejs\npm.cmd" -->
-<!-- To run node and npm keywords set $env:PATH += ";C:\Program Files\nodejs\" -->
+To run node.js on Windows:
+& "C:\Program Files\nodejs\npm.cmd"
+To set npm in env: $env:PATH += ";C\Program Files\nodejs\"
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
-
-The Vite dev server proxies `/ahp/*` and `/rul/*` requests to `http://localhost:8000`, so no CORS configuration is needed during development.
-
----
-
-## Dashboard Features
-
-| Feature | Description |
-|---|---|
-| AHP Matrix | 5x5 pairwise comparison input with Saaty scale dropdowns and auto-reciprocals |
-| Manual Score Inputs | C1 (Criticality) and C4 (Downtime Impact) manual inputs with scoring guides |
-| Data Upload | Upload custom pump data (CSV/JSON, 26 fields including rolling telemetry features) with validation + template download |
-| KPI Cards | Average risk score, highest risk pump, high-risk count, CR status |
-| Weight Distribution | Recharts bar chart of criterion weights after matrix submission |
-| Asset Registry | Table of all pumps with expandable detail rows |
-| Risk Ranking | Ranked table + color-coded bar chart (green 1-3, yellow 4-6, red 7-9) |
-| Criteria Contribution | Stacked bar chart showing weighted criterion breakdown per pump |
-| Risk vs Condition | Scatter plot with quadrant reference lines and colored regions |
-| RUL Predictions | XGBoost predicted RUL per pump in months with confidence interval, color-coded (green >120mo, yellow 60-120mo, red <60mo), sorted by urgency |
-| AI Explanations | Claude-generated maintenance recommendations per pump (on demand only) |
-| Score History Log | Tracks matrix submissions, manual score overrides, and data uploads |
+Runs at `http://localhost:5173`. Vite proxies `/ahp/*`, `/rul/*`, and `/upload/*` to the backend automatically.
 
 ---
 
-## Running tests
+## How It Works
 
-```bash
-pytest tests/
-```
+### AHP Risk Scoring
+
+The user fills a 5x5 pairwise comparison matrix in the dashboard, following Saaty's 1-9 scale. The engine derives a weight vector from the matrix and validates consistency using the Consistency Ratio (CR). A CR above 0.10 indicates an inconsistent matrix -- the dashboard surfaces a warning and blocks RUL predictions until the matrix is corrected.
+
+Each asset is scored against 5 criteria (C1-C5) on a 1-10 internal scale, converted to the 1-9 Saaty scale. The overall risk factor is the dot product of the weight vector and score vector, producing a score from 1 to 9 per asset. Higher scores indicate higher risk.
+
+In the default fleet mode, three criteria (Condition, Failure Probability, Maintenance Cost Trend) are derived automatically from sensor telemetry. Two criteria (Criticality, Downtime Impact) are manual inputs with defaults based on the KSB Calio operational context.
+
+### RUL Prediction
+
+The XGBoost model is trained on daily telemetry rows from the KSB dataset (1,095 days x 5 pumps). Each training sample is a 24-feature vector combining raw asset variables, the full AHP weight vector, the AHP weighted score vector, the overall risk factor, and 5 rolling telemetry features. The training target is `True_RUL_Days / 365` (years).
+
+At inference time, the raw model prediction is adjusted by the AHP risk factor: `RUL_adjusted = RUL_raw x (1 - (risk_factor - 1) / 8)`. This means a higher risk score directly reduces predicted remaining life. RUL is displayed in months in the dashboard; the backend always returns years.
+
+### Dynamic Asset Upload
+
+When a user uploads an Excel file (two sheets: Operational Telemetry and Failure & Maintenance Logs), the pipeline:
+
+1. Validates the file and detects column roles by keyword heuristics -- no specific column names are required.
+2. Calls the Anthropic API to infer 5 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges.
+3. Trains a fresh XGBoost model on the uploaded dataset.
+4. Scores each asset and predicts RUL using the user's AHP matrix.
+
+All column name references flow through a central resolver module (`data/column_resolver.py`) -- no part of the pipeline hardcodes column names.
+
+### GenAI Explanations
+
+On demand, the dashboard calls the Anthropic API to generate a 3-4 sentence plain-English explanation for each asset's RUL prediction. The explanation names the biggest AHP risk drivers given the current weights, highlights the key telemetry signals, and recommends a specific maintenance action. For uploaded assets, the explanation adapts to the inferred asset type and failure modes.
 
 ---
 
 ## API Reference
 
-Base URL: `http://localhost:8000`
+The FastAPI backend exposes three routers.
 
-### AHP Endpoints
-
-| Method | Route | Description |
-|---|---|---|
-| `POST` | `/ahp/calculate-weights` | 5x5 pairwise matrix -> weights, lambda_max, CI, CR, valid flag |
-| `POST` | `/ahp/score-asset` | Pump variables -> C1-C5 Saaty scores |
-| `POST` | `/ahp/risk-factor` | weights + scores -> risk factor + weighted scores |
-| `GET` | `/ahp/assets` | All pumps ranked by risk factor (`?weights=`, `?c1_score=`, `?c4_score=`) |
-
-### RUL Endpoints
+### `/ahp` -- AHP Engine
 
 | Method | Route | Description |
 |---|---|---|
-| `POST` | `/rul/predict` | pump + AHP weights + scores + CR -> adjusted RUL + confidence interval |
-| `POST` | `/rul/explain` | pump + AHP results + RUL -> Claude plain language explanation |
+| POST | `/ahp/calculate-weights` | 5x5 matrix -> weights, CR, valid flag |
+| POST | `/ahp/score-asset` | Asset variables -> C1-C5 scores |
+| POST | `/ahp/risk-factor` | Weights + scores -> risk factor |
+| GET | `/ahp/assets` | All default fleet assets ranked by risk score |
 
-Both RUL endpoints reject requests with CR > 0.10 (HTTP 400).
+GET `/ahp/assets` accepts query params: `weights` (repeated float), `c1_score` (int, default 7), `c4_score` (int, default 6).
 
-Interactive docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+### `/rul` -- RUL Prediction (Default Fleet)
+
+| Method | Route | Description |
+|---|---|---|
+| POST | `/rul/predict` | Asset + AHP features -> adjusted RUL + CI |
+| POST | `/rul/explain` | Asset + AHP + RUL -> Claude explanation |
+
+### `/upload` -- Dynamic Asset Upload
+
+| Method | Route | Description |
+|---|---|---|
+| POST | `/upload/analyze` | Upload Excel -> infer criteria, train model, score assets |
+| POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets |
+| POST | `/upload/explain` | Asset + AHP + RUL + asset type -> Claude explanation |
+
+Full request/response schemas are available at `http://localhost:8000/docs` when the backend is running.
+
+---
+
+## Upload File Format
+
+The upload endpoint accepts a two-sheet Excel file (`.xlsx`). Column names are flexible -- the system detects roles by keyword matching and Claude infers scoring logic from the actual data. The only structural requirements are the two sheet names and the presence of detectable role columns.
+
+### Sheet 1: `Operational Telemetry`
+
+| Role | Detection keywords | Required |
+|---|---|---|
+| Asset identifier | column name contains `_id` or `id` | Yes |
+| Timestamp | column name contains `date`, `time`, or `timestamp` | Yes |
+| RUL target | column name contains `rul`, `remaining`, `life`, or `ttf` | Yes |
+| Operating hours | column name contains `hour`, `runtime`, `operating`, `cycles`, or `cumulative` | Yes |
+| Sensor readings | all other numeric columns | Min. 2 |
+
+### Sheet 2: `Failure & Maintenance Logs`
+
+| Role | Detection keywords | Required |
+|---|---|---|
+| Asset identifier | same as telemetry sheet | Yes |
+| Event date | column name contains `date`, `time`, or `timestamp` | Yes |
+| Event type | column name contains `event`, `type`, `status`, or `category` | Yes |
+| Component, root cause, etc. | any remaining columns | No |
+
+If a required role cannot be detected, the validation error message lists all column names found in the file so you know what to rename.
 
 ---
 
@@ -154,72 +214,53 @@ Interactive docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ```
 agelix-consulting-project-2026/
-+-- main.py                        # FastAPI entry point (mounts ahp + rul routers)
-+-- ahp/                           # AHP module (Phase 1, do not modify)
-|   +-- ahp_constants.py           # RI values, CR threshold, criteria names
-|   +-- criteria_scoring.py        # C1-C5 scoring functions, convert_to_saaty()
-|   +-- ahp_engine.py              # Matrix normalisation, weight derivation, CR
-|   +-- risk_calculator.py         # Dot product risk factor, ranked asset list
-|   +-- api.py                     # FastAPI AHP endpoints (loads from aggregator)
-+-- rul/                           # RUL module (Phase 2)
-|   +-- feature_engineering.py     # 24-feature vector builder
-|   +-- train.py                   # Trains XGBoost on CEO telemetry (5440 samples)
-|   +-- ml_rul_model.py            # predict() + predict_adjusted() with AHP risk adj
-|   +-- rul_explainer.py           # Anthropic API (claude-sonnet-4-6) explanation
-|   +-- api.py                     # FastAPI RUL endpoints (APIRouter via main.py)
-|   +-- model.pkl                  # Trained XGBoost model (generated by train.py)
-+-- data/
-|   +-- raw/
-|   |   +-- telemetry/
-|   |   |   +-- KSB_Calio_Predictive_Maintenance_Complete.xlsx  # 1095 days x 5 pumps
-|   |   +-- maintenance/
-|   |       +-- maintenance_log.xlsx
-|   +-- telemetry_aggregator.py    # Sole data source (replaces pumps.json)
-|   +-- generate_maintenance_log.py # CEO's script: generates telemetry + maintenance log
-+-- frontend/
-|   +-- vite.config.js             # Vite + API proxy (/ahp, /rul)
-|   +-- src/
-|       +-- App.jsx
-|       +-- components/
-|       |   +-- Dashboard.jsx          # Orchestrates all components + state management
-|       |   +-- AHPMatrix.jsx          # 5x5 pairwise matrix UI with CR validation
-|       |   +-- ManualScoreInputs.jsx  # C1 + C4 manual inputs with scoring guides
-|       |   +-- DataUpload.jsx         # CSV/JSON upload with validation + template
-|       |   +-- WeightDisplay.jsx      # AHP weight distribution bar chart
-|       |   +-- AssetRegistry.jsx      # Pump table with expandable detail rows
-|       |   +-- RiskRanking.jsx        # Ranked risk table + color-coded bar chart
-|       |   +-- CriteriaContribution.jsx # Stacked bar of weighted criterion contributions
-|       |   +-- RiskScatterPlot.jsx    # Risk vs Condition scatter with quadrants
-|       |   +-- RULDisplay.jsx         # RUL progress bars in months + confidence intervals
-|       |   +-- RULExplanation.jsx     # Claude explanation cards per pump
-|       +-- hooks/
-|       |   +-- useAHP.js              # POST /ahp/calculate-weights
-|       |   +-- useRiskScores.js       # GET /ahp/assets with current weights
-|       |   +-- useRUL.js              # Auto-predict + on-demand explain
-|       +-- utils/
-|           +-- dateUtils.js
-|           +-- dataParser.js          # CSV/JSON parsing + validation
-+-- tests/
-|   +-- rul/
-|       +-- test_telemetry_aggregator.py
-|       +-- test_feature_engineering.py
-|       +-- test_ml_rul_model.py
-|       +-- test_rul_explainer.py
-+-- .env.example
++-- main.py                        # FastAPI entry point
 +-- requirements.txt
-+-- CLAUDE.md                      # Architecture spec and build guide
++-- ahp/                           # AHP engine (do not modify)
+|   +-- criteria_scoring.py        # Scoring rules, convert_to_saaty(), clamp()
+|   +-- ahp_engine.py              # Matrix math, CR calculation
+|   +-- risk_calculator.py         # Risk factor dot product
+|   +-- dynamic_criteria_scorer.py # Runtime CriteriaConfig interpreter
+|   +-- api.py                     # /ahp/* endpoints
++-- rul/                           # RUL prediction
+|   +-- feature_engineering.py     # 24-feature vector (default fleet)
+|   +-- ml_rul_model.py            # predict() + predict_adjusted()
+|   +-- train.py                   # Trains default fleet model -> model.pkl
+|   +-- rul_explainer.py           # Anthropic API explanation
+|   +-- dynamic_*.py               # Dynamic equivalents for uploaded assets
+|   +-- api.py                     # /rul/* endpoints
++-- data/
+|   +-- telemetry_aggregator.py    # Default fleet data source
+|   +-- upload_schema.py           # Upload validation + column detection
+|   +-- schema_inferrer.py         # Claude API -> CriteriaConfig
+|   +-- column_resolver.py         # Centralized column name lookups
+|   +-- dynamic_aggregator.py      # Asset snapshots for uploaded data
+|   +-- raw/                       # Telemetry, maintenance log, uploads
++-- upload/
+|   +-- api.py                     # /upload/* endpoints
++-- frontend/src/
+|   +-- components/                # React components
+|   +-- hooks/                     # useAHP, useRUL, useUpload
++-- tests/
 ```
 
 ---
 
-## Tech Stack
+## Environment Variables
 
-| Layer | Technology |
-|---|---|
-| Backend | Python 3.11+, FastAPI, Uvicorn |
-| Math | NumPy |
-| Data | Pandas, openpyxl |
-| ML Model | XGBoost, Scikit-learn, Joblib |
-| GenAI | Anthropic API (claude-sonnet-4-6) |
-| Frontend | React 18, Vite, Recharts |
-| Testing | Pytest |
+| Variable | Description | Required |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic API key for schema inference and explanations | Yes |
+| `API_BASE_URL` | Backend base URL for the frontend | Yes (default: `http://localhost:8000`) |
+
+Never commit `.env`. The `.env.example` file contains safe empty placeholders.
+
+---
+
+## Running Tests
+
+```bash
+pytest tests/
+```
+
+The upload pipeline tests mock all Anthropic API calls -- no API key is required to run the test suite.
