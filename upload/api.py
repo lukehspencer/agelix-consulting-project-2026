@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -14,11 +15,53 @@ from rul.dynamic_feature_engineering import build_dynamic_feature_vector
 from rul.dynamic_ml_rul_model import predict_adjusted_dynamic
 from rul.rul_explainer import explain
 from data.column_resolver import get_sensor_columns
+from rag.retriever import retrieve_for_schema_inference, retrieve_for_explanation
+from rag.knowledge_base import store_criteria_config
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
 _UPLOAD_DIR = Path("data/raw/uploads")
+_FAILURE_CASES_DIR = Path("docs/failure_cases")
 _CR_THRESHOLD = 0.10
+
+
+def _generate_failure_case(criteria_config: dict, training_result: dict) -> None:
+    try:
+        _FAILURE_CASES_DIR.mkdir(parents=True, exist_ok=True)
+        asset_type = criteria_config.get("asset_type", "unknown")
+        safe_name = asset_type.lower().replace(" ", "_").replace("/", "_")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        file_path = _FAILURE_CASES_DIR / f"{safe_name}_{timestamp}.md"
+
+        sensor_cols = []
+        for c in criteria_config.get("criteria", []):
+            if c.get("primary_column"):
+                sensor_cols.append(c["primary_column"])
+            for sc in c.get("secondary_columns", []):
+                sensor_cols.append(sc)
+
+        criteria_names = [c["name"] for c in criteria_config.get("criteria", [])]
+        failure_modes = criteria_config.get("failure_modes", [])
+
+        lines = [
+            f"# {asset_type}",
+            "",
+            f"## Asset Type: {asset_type}",
+            "",
+            f"## Sensor Columns: {', '.join(sensor_cols)}",
+            "",
+            f"## Failure Modes: {', '.join(failure_modes)}",
+            "",
+            f"## Inferred AHP Criteria: {', '.join(criteria_names)}",
+            "",
+            f"## Training Results",
+            f"- Train RMSE: {training_result['train_rmse']:.4f}",
+            f"- Test RMSE: {training_result['test_rmse']:.4f}",
+        ]
+
+        file_path.write_text("\n".join(lines), encoding="utf-8")
+    except Exception:
+        pass
 
 
 class PredictAllInput(BaseModel):
@@ -69,10 +112,17 @@ async def analyze_upload(file: UploadFile):
     except UploadValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    retrieved_context = retrieve_for_schema_inference(schema_summary)
+
     try:
-        criteria_config = infer_criteria_config(schema_summary)
+        criteria_config = infer_criteria_config(schema_summary, retrieved_context)
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    try:
+        store_criteria_config(criteria_config, criteria_config.get("asset_type", "unknown"))
+    except Exception:
+        pass
 
     try:
         training_result = train_dynamic_model(
@@ -80,6 +130,8 @@ async def analyze_upload(file: UploadFile):
         )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    _generate_failure_case(criteria_config, training_result)
 
     try:
         snapshots = aggregate_uploaded_data(
@@ -200,6 +252,12 @@ def explain_asset(body: ExplainInput):
                    "Revise pairwise comparisons.",
         )
 
+    retrieved_context = retrieve_for_explanation(
+        body.pump,
+        {"asset_type": body.asset_type, "failure_modes": body.failure_modes or []},
+        body.risk_factor,
+    )
+
     try:
         text = explain(
             pump=body.pump,
@@ -212,6 +270,7 @@ def explain_asset(body: ExplainInput):
             asset_type=body.asset_type,
             failure_modes=body.failure_modes,
             sensor_context=body.sensor_context,
+            retrieved_context=retrieved_context,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))

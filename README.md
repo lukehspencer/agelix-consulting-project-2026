@@ -1,12 +1,12 @@
 # Assets Maestro -- Predictive Asset Management Dashboard
 
-> An asset risk scoring and remaining useful life (RUL) prediction dashboard for industrial equipment, powered by AHP-based risk analysis and XGBoost ML, with AI-generated maintenance explanations via the Anthropic API.
+> An asset risk scoring and remaining useful life (RUL) prediction dashboard for industrial equipment, powered by AHP-based risk analysis, XGBoost ML, and RAG-augmented AI explanations via the Anthropic API.
 
 ---
 
 ## Overview
 
-The dashboard scores industrial assets using the Analytic Hierarchy Process (AHP) -- a structured method for multi-criteria risk ranking -- and predicts remaining useful life using a trained XGBoost model. Risk scores and RUL predictions update dynamically as the user adjusts the AHP pairwise comparison matrix. A GenAI explanation layer (Claude, via the Anthropic API) generates plain-English maintenance recommendations for each asset on demand.
+The dashboard scores industrial assets using the Analytic Hierarchy Process (AHP) -- a structured method for multi-criteria risk ranking -- and predicts remaining useful life using a trained XGBoost model. Risk scores and RUL predictions update dynamically as the user adjusts the AHP pairwise comparison matrix. A GenAI explanation layer (Claude, via the Anthropic API) generates plain-English maintenance recommendations for each asset on demand, enriched by a RAG (Retrieval-Augmented Generation) knowledge pipeline that retrieves relevant engineering standards, past failure cases, and prior asset configurations.
 
 The dashboard operates in two modes. The default mode loads a pre-configured fleet of 5 KSB Calio 30-40 centrifugal pump assets from operational telemetry provided by the client. The upload mode accepts any asset type -- the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria and scoring thresholds for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data.
 
@@ -23,6 +23,7 @@ Built as an internship project for Agelix Consulting to extend their asset lifec
 | ML Model | XGBoost, scikit-learn, joblib |
 | GenAI Layer | Anthropic API (claude-sonnet-4-6) |
 | Schema Inference | Anthropic API (claude-sonnet-4-6) |
+| RAG Pipeline | ChromaDB, SentenceTransformers, LangChain |
 | API Layer | FastAPI, Uvicorn |
 | Frontend | React, Recharts |
 | Testing | pytest |
@@ -81,7 +82,15 @@ python -m rul.train
 
 Outputs `rul/model.pkl`. Required before starting the backend.
 
-### Step 6 -- Install frontend dependencies
+### Step 6 -- Build the RAG knowledge base (optional)
+
+```bash
+python -m rag.ingest
+```
+
+Creates the ChromaDB vector store at `rag/chroma_db/`. This step is optional -- the system works without it, but schema inference and RUL explanations improve when domain knowledge is available. To populate it, place PDF manuals in `docs/manuals/` and/or failure case markdown files in `docs/failure_cases/` before running. CriteriaConfigs from previous uploads are stored automatically in `rag/stored_configs/`. Use `--rebuild` to force a full rebuild.
+
+### Step 7 -- Install frontend dependencies
 
 ```bash
 cd frontend
@@ -137,15 +146,34 @@ At inference time, the raw model prediction is adjusted by the AHP risk factor: 
 When a user uploads an Excel file (two sheets: Operational Telemetry and Failure & Maintenance Logs), the pipeline:
 
 1. Validates the file and detects column roles by keyword heuristics -- no specific column names are required.
-2. Calls the Anthropic API to infer 5 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges.
-3. Trains a fresh XGBoost model on the uploaded dataset.
-4. Scores each asset and predicts RUL using the user's AHP matrix.
+2. Queries the RAG knowledge base for relevant engineering standards, similar past CriteriaConfigs, and known failure cases.
+3. Calls the Anthropic API to infer 3-7 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges, enriched by retrieved domain knowledge.
+4. Stores the inferred CriteriaConfig in the knowledge base for future retrieval.
+5. Trains a fresh XGBoost model on the uploaded dataset.
+6. Auto-generates a failure case document recording the asset type, sensors, failure modes, criteria, and training metrics.
+7. Scores each asset and predicts RUL using the user's AHP matrix.
 
 All column name references flow through a central resolver module (`data/column_resolver.py`) -- no part of the pipeline hardcodes column names.
 
 ### GenAI Explanations
 
-On demand, the dashboard calls the Anthropic API to generate a 3-4 sentence plain-English explanation for each asset's RUL prediction. The explanation names the biggest AHP risk drivers given the current weights, highlights the key telemetry signals, and recommends a specific maintenance action. For uploaded assets, the explanation adapts to the inferred asset type and failure modes.
+On demand, the dashboard calls the Anthropic API to generate a 3-4 sentence plain-English explanation for each asset's RUL prediction. The explanation names the biggest AHP risk drivers given the current weights, highlights the key telemetry signals, and recommends a specific maintenance action. For uploaded assets, the explanation adapts to the inferred asset type and failure modes, and is enriched with retrieved failure precedents and maintenance guidance from the RAG knowledge base when available.
+
+### RAG Knowledge Pipeline
+
+The RAG system enriches Claude's prompts with retrieved domain knowledge. It is entirely optional -- when the knowledge base is missing or empty, the system behaves identically to before.
+
+Three document types are ingested into a ChromaDB vector store using SentenceTransformer (`all-MiniLM-L6-v2`) embeddings:
+
+- **PDF manuals** (`docs/manuals/`) -- engineering standards and operating limits, chunked at 500 characters.
+- **Failure case markdown** (`docs/failure_cases/`) -- auto-generated after each successful upload training run (asset type, sensors, failure modes, criteria, training RMSE), chunked at 300 characters. Manual failure case files can also be added.
+- **CriteriaConfigs** (`rag/stored_configs/`) -- saved as JSON after each successful schema inference, indexed as whole documents.
+
+The retriever makes targeted queries per use case:
+- **Schema inference**: retrieves engineering standards, similar past configs, and failure cases, injected as a RETRIEVED DOMAIN KNOWLEDGE block in the inference prompt.
+- **RUL explanation**: retrieves failure precedents and maintenance guidance, injected as a RETRIEVED MAINTENANCE KNOWLEDGE block in the explainer prompt with an instruction to cite the most relevant precedent.
+
+The knowledge base grows automatically as assets are uploaded -- each upload stores its CriteriaConfig and generates a failure case document. To bootstrap with existing domain knowledge, place PDFs and markdown files in the appropriate directories and run `python -m rag.ingest`.
 
 ---
 
@@ -232,12 +260,22 @@ agelix-consulting-project-2026/
 +-- data/
 |   +-- telemetry_aggregator.py    # Default fleet data source
 |   +-- upload_schema.py           # Upload validation + column detection
-|   +-- schema_inferrer.py         # Claude API -> CriteriaConfig
+|   +-- schema_inferrer.py         # Claude API + RAG context -> CriteriaConfig
 |   +-- column_resolver.py         # Centralized column name lookups
 |   +-- dynamic_aggregator.py      # Asset snapshots for uploaded data
 |   +-- raw/                       # Telemetry, maintenance log, uploads
 +-- upload/
-|   +-- api.py                     # /upload/* endpoints
+|   +-- api.py                     # /upload/* endpoints (wires RAG retrieval)
++-- rag/
+|   +-- document_loader.py         # Loads + chunks PDFs, markdown, JSON configs
+|   +-- knowledge_base.py          # ChromaDB vector store (SentenceTransformer embeddings)
+|   +-- retriever.py               # RAG retrieval entry point for all use cases
+|   +-- ingest.py                  # CLI: python -m rag.ingest [--rebuild]
+|   +-- stored_configs/            # Saved CriteriaConfig JSON files (auto-populated)
+|   +-- chroma_db/                 # ChromaDB persistent store (auto-generated)
++-- docs/
+|   +-- manuals/                   # PDF manuals for RAG ingestion
+|   +-- failure_cases/             # Auto-generated + manual failure case markdown
 +-- frontend/src/
 |   +-- components/                # React components
 |   +-- hooks/                     # useAHP, useRUL, useUpload

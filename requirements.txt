@@ -12,3 +12,10 @@ joblib>=1.4.0
 anthropic>=0.40.0
 openpyxl>=3.1.0
 python-multipart>=0.0.9
+langchain>=0.2
+langchain-community
+langchain-chroma
+langchain-text-splitters
+chromadb
+sentence-transformers
+pypdf

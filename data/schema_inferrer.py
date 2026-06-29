@@ -10,7 +10,7 @@ _MODEL = "claude-sonnet-4-6"
 _MAX_TOKENS = 2500
 
 
-def _build_prompt(s: dict) -> str:
+def _build_prompt(s: dict, retrieved_context: dict = None) -> str:
     sensor_lines = []
     for col in s["sensor_columns"]:
         st = s["sensor_stats"][col]
@@ -22,6 +22,24 @@ def _build_prompt(s: dict) -> str:
     sensor_block = "\n".join(sensor_lines)
 
     extra_samples = json.dumps(s.get("log_extra_column_samples", {}), indent=2)
+
+    rag_block = ""
+    if retrieved_context and retrieved_context.get("retrieval_available"):
+        rag_parts = []
+        if retrieved_context.get("standards_chunks"):
+            rag_parts.append("Engineering Standards and Manuals:")
+            for chunk in retrieved_context["standards_chunks"]:
+                rag_parts.append(f"  - {chunk}")
+        if retrieved_context.get("similar_configs"):
+            rag_parts.append("Similar Past CriteriaConfigs:")
+            for chunk in retrieved_context["similar_configs"]:
+                rag_parts.append(f"  - {chunk}")
+        if retrieved_context.get("failure_case_chunks"):
+            rag_parts.append("Known Failure Cases:")
+            for chunk in retrieved_context["failure_case_chunks"]:
+                rag_parts.append(f"  - {chunk}")
+        if rag_parts:
+            rag_block = "\nRETRIEVED DOMAIN KNOWLEDGE:\n" + "\n".join(rag_parts) + "\n"
 
     return f"""You are an asset reliability engineer designing an AHP (Analytic Hierarchy
 Process) risk scoring system for an uploaded asset dataset.
@@ -42,7 +60,7 @@ FAILURE & MAINTENANCE LOG:
 - Event type column name: {s.get("log_event_type_column", "unknown")}
 - Unique event type values found: {s.get("log_event_type_values", [])}
 - Additional log columns and sample values: {extra_samples}
-
+{rag_block}
 TASK:
 Design between 3 and 7 AHP criteria for this asset type, labeled C1 through CN.
 Choose the number of criteria that best fits the data -- use more criteria when
@@ -223,8 +241,8 @@ def _validate_config(config: dict, schema_summary: dict) -> None:
         )
 
 
-def infer_criteria_config(schema_summary: dict) -> dict:
-    prompt = _build_prompt(schema_summary)
+def infer_criteria_config(schema_summary: dict, retrieved_context: dict = None) -> dict:
+    prompt = _build_prompt(schema_summary, retrieved_context)
 
     try:
         client = anthropic.Anthropic()

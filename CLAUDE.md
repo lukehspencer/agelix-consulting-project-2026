@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-An asset management dashboard for **Agelix Consulting** extending the *Assets Maestro* platform. The system combines AHP (Analytic Hierarchy Process) risk scoring with XGBoost ML-based Remaining Useful Life prediction and Claude-powered GenAI explainability. It operates in two modes: a default fleet mode for 5 KSB Calio 30-40 pumps with fixed scoring rules, and an uploaded asset mode that accepts any asset type's telemetry and uses Claude to infer AHP criteria dynamically.
+An asset management dashboard for **Agelix Consulting** extending the *Assets Maestro* platform. The system combines AHP (Analytic Hierarchy Process) risk scoring with XGBoost ML-based Remaining Useful Life prediction, Claude-powered GenAI explainability, and a RAG (Retrieval-Augmented Generation) knowledge pipeline that enriches both schema inference and RUL explanations with domain knowledge from manuals, past failure cases, and stored CriteriaConfigs. It operates in two modes: a default fleet mode for 5 KSB Calio 30-40 pumps with fixed scoring rules, and an uploaded asset mode that accepts any asset type's telemetry and uses Claude to infer AHP criteria dynamically.
 
 ---
 
@@ -25,15 +25,28 @@ Default Fleet Mode:
 Upload Mode:
   User Excel file (.xlsx)
   -> upload_schema.py (validation + schema_summary)
-  -> schema_inferrer.py (Anthropic API -> CriteriaConfig)
+  -> retriever.py (RAG: standards, similar configs, failure cases)
+  -> schema_inferrer.py (Anthropic API + retrieved_context -> CriteriaConfig)
+  -> knowledge_base.py (store CriteriaConfig for future retrieval)
   -> column_resolver.py (all column lookups)
   -> dynamic_aggregator.py (asset snapshots)
   -> dynamic_criteria_scorer.py (AHP scores from CriteriaConfig)
   -> dynamic_feature_engineering.py (variable-length feature vector)
   -> dynamic_train.py + dynamic_ml_rul_model.py (RUL)
-  -> rul_explainer.py (Claude explanation with dynamic asset_type)
+  -> auto-generate failure case markdown (docs/failure_cases/)
+  -> retriever.py (RAG: failure precedents, maintenance guidance)
+  -> rul_explainer.py (Claude explanation with retrieved_context)
   -> FastAPI (upload/api.py)
   -> React dashboard (uploaded mode)
+
+RAG Knowledge Pipeline:
+  docs/manuals/ (PDF manuals)
+  + docs/failure_cases/ (auto-generated + manual markdown)
+  + rag/stored_configs/ (saved CriteriaConfigs as JSON)
+  -> document_loader.py (load + chunk all three types)
+  -> knowledge_base.py (SentenceTransformer embeddings -> ChromaDB)
+  -> retriever.py (targeted queries per use case)
+  -> injected into schema_inferrer.py and rul_explainer.py prompts
 ```
 
 ---
@@ -93,6 +106,16 @@ agelix-consulting-project-2026/
 |   +-- __init__.py
 |   +-- api.py                             # /upload/analyze, /upload/predict-all, /upload/explain
 |
++-- rag/
+|   +-- __init__.py
+|   +-- __main__.py                        # entry point for python -m rag
+|   +-- document_loader.py                 # loads + chunks PDFs, markdown, JSON configs
+|   +-- knowledge_base.py                  # ChromaDB vector store management
+|   +-- retriever.py                       # RAG retrieval entry point for all use cases
+|   +-- ingest.py                          # CLI: python -m rag.ingest [--rebuild]
+|   +-- chroma_db/                         # ChromaDB persistent store (gitignored)
+|   +-- stored_configs/                    # saved CriteriaConfig JSON files
+|
 +-- frontend/
 |   +-- src/
 |       +-- App.jsx
@@ -136,6 +159,8 @@ agelix-consulting-project-2026/
     +-- criteria-scoring-rules.md
     +-- data-schema.md
     +-- rul-methodology.md
+    +-- manuals/                            # PDF manuals for RAG ingestion
+    +-- failure_cases/                      # auto-generated + manual failure case markdown
 ```
 
 ---
@@ -152,7 +177,7 @@ These files must never be modified. They are stable, tested, and depended upon b
 - `rul/train.py` -- trains default KSB XGBoost model
 - `data/telemetry_aggregator.py` -- sole data source for default fleet
 
-One permitted exception: `rul/rul_explainer.py` accepts optional parameters (`asset_type`, `failure_modes`, `sensor_context`) added with defaults that preserve all existing call signatures.
+One permitted exception: `rul/rul_explainer.py` accepts optional parameters (`asset_type`, `failure_modes`, `sensor_context`, `retrieved_context`) added with defaults that preserve all existing call signatures.
 
 ---
 
@@ -244,16 +269,15 @@ Loads 5 KSB Calio 30-40 pumps from CEO telemetry via `telemetry_aggregator.py`. 
 Dashboard layout (top to bottom):
 1.  AHPMatrix
 2.  ManualScoreInputs (C1 Criticality default 7, C4 Downtime Impact default 6)
-3.  DataUpload (CSV/JSON upload for KSB pump data with 26-field schema)
-4.  KPI Summary Cards
-5.  WeightDisplay
-6.  AssetRegistry
-7.  RiskRanking
-8.  CriteriaContribution
-9.  RiskScatterPlot
-10. RULDisplay (RUL in months, converted from rul_years * 12 at display layer)
-11. RULExplanation (RUL header also in months)
-12. Score History Log
+3.  KPI Summary Cards
+4.  WeightDisplay
+5.  AssetRegistry
+6.  RiskRanking
+7.  CriteriaContribution
+8.  RiskScatterPlot
+9.  RULDisplay (RUL in months, converted from rul_years * 12 at display layer)
+10. RULExplanation (RUL header also in months)
+11. Score History Log
 
 ### Uploaded Asset Mode
 
@@ -555,7 +579,7 @@ Validates uploaded Excel files against the two-sheet contract. Detects column ro
 
 ### schema_inferrer.py
 
-Makes one Anthropic API call (claude-sonnet-4-6, max_tokens=2500) with the full schema_summary. Claude returns a CriteriaConfig JSON dict -- the single source of truth for all downstream files. After parsing, validates every column name Claude returns against schema_summary to prevent hallucinated names from breaking the pipeline. Raises `RuntimeError` on API failure or invalid response.
+Makes one Anthropic API call (claude-sonnet-4-6, max_tokens=2500) with the full schema_summary. Accepts an optional `retrieved_context: dict` parameter. When provided and `retrieval_available` is True, a RETRIEVED DOMAIN KNOWLEDGE block is injected into the prompt between the sensor statistics and TASK sections, containing `standards_chunks`, `similar_configs`, and `failure_case_chunks` from the RAG pipeline. Claude returns a CriteriaConfig JSON dict -- the single source of truth for all downstream files. After parsing, validates every column name Claude returns against schema_summary to prevent hallucinated names from breaking the pipeline. Raises `RuntimeError` on API failure or invalid response. All existing behavior is unchanged when `retrieved_context` is None.
 
 ### column_resolver.py
 
@@ -571,6 +595,80 @@ get_sensor_columns(criteria_config) -> list[str]
 ### dynamic_aggregator.py
 
 Reads an uploaded Excel file and produces one asset snapshot dict per unique asset. For each asset: sorts by date column, computes rolling mean/std for every sensor column, takes the last row as the snapshot. From the log sheet, counts failures in last 90 days, total failure count, and days since last event. Sensor values and rolling features are keyed by actual column names from the data, not normalized names.
+
+---
+
+## RAG Knowledge Pipeline
+
+The RAG system enriches Claude's prompts in both schema inference and RUL explanation with retrieved domain knowledge. It is additive only -- the knowledge base is never required, and all RAG-dependent code paths degrade gracefully when it is missing or empty.
+
+### Document Sources
+
+Three document types are ingested:
+
+| Type | Location | Format | Chunking |
+|---|---|---|---|
+| Manuals | `docs/manuals/` | PDF | RecursiveCharacterTextSplitter, chunk_size=500, overlap=50 |
+| Failure cases | `docs/failure_cases/` | Markdown | RecursiveCharacterTextSplitter, chunk_size=300, overlap=30 |
+| CriteriaConfigs | `rag/stored_configs/` | JSON | One chunk per file (full JSON) |
+
+Failure case markdown files are auto-generated after each successful upload training run. They contain asset type, sensor columns, failure modes, inferred criteria names, and training RMSE. Manual failure case files can also be placed in the directory.
+
+### document_loader.py
+
+Loads and chunks all three document types. Returns a list of dicts with `content`, `source`, `page`, `doc_type` fields. Gracefully skips files that fail to load. `doc_type` values: `"manual"`, `"failure_case"`, `"criteria_config"`.
+
+### knowledge_base.py
+
+Manages the ChromaDB vector store at `rag/chroma_db/` using SentenceTransformer(`all-MiniLM-L6-v2`) embeddings.
+
+```python
+build_knowledge_base(force_rebuild=False) -> int
+```
+Loads all document types via `document_loader.load_all_documents()` and ingests into ChromaDB. Deduplicates by `source::page=N` ID. Returns total document count.
+
+```python
+query(query_text, n_results=5, doc_type=None) -> list[str]
+```
+Returns list of content strings. Filters by `doc_type` metadata when provided. Raises `RuntimeError` with a helpful message if the store is missing.
+
+```python
+store_criteria_config(criteria_config, asset_type) -> Path
+```
+Saves CriteriaConfig as JSON to `rag/stored_configs/<asset_type>.json` and calls `build_knowledge_base()` to add it to the store. Called automatically after each successful schema inference in `upload/api.py`.
+
+### retriever.py
+
+Single entry point for all RAG retrieval. Two public functions, both returning dicts with a `retrieval_available` boolean. Both catch `RuntimeError` from `knowledge_base.query()` and return `retrieval_available=False` instead of raising -- missing knowledge base is always graceful degradation, never a failure.
+
+```python
+retrieve_for_schema_inference(schema_summary) -> dict
+```
+Makes three targeted queries (standards/manuals, similar past configs, failure cases). Returns `{"standards_chunks", "similar_configs", "failure_case_chunks", "retrieval_available"}`.
+
+```python
+retrieve_for_explanation(asset_snapshot, criteria_config, risk_factor) -> dict
+```
+Makes two targeted queries (failure precedents, maintenance standards). Returns `{"failure_precedents", "maintenance_guidance", "retrieval_available"}`.
+
+### ingest.py
+
+CLI script invoked via `python -m rag.ingest` (or `python -m rag`). Supports `--rebuild` flag for full rebuild. Creates `docs/manuals/`, `docs/failure_cases/`, `rag/stored_configs/`, and `rag/chroma_db/` if they don't exist, with `.gitkeep` files in the first three. Prints a helpful message if source directories are empty.
+
+### Integration Points
+
+**upload/api.py POST /upload/analyze:**
+1. Calls `retrieve_for_schema_inference(schema_summary)` before `infer_criteria_config()`
+2. Passes retrieved context as `retrieved_context` to `infer_criteria_config()`
+3. Calls `store_criteria_config()` after successful inference
+4. Auto-generates a failure case markdown file in `docs/failure_cases/` after successful training
+
+**upload/api.py POST /upload/explain:**
+1. Calls `retrieve_for_explanation()` before `rul_explainer.explain()`
+2. Passes retrieved context as `retrieved_context` to `explain()`
+
+**rul/rul_explainer.py:**
+When `retrieved_context` is provided and `retrieval_available` is True, a RETRIEVED MAINTENANCE KNOWLEDGE block is injected into the prompt containing `failure_precedents` and `maintenance_guidance`. An instruction is added to cite the most relevant precedent by describing the case (not quoting verbatim). All existing behavior is unchanged when `retrieved_context` is None.
 
 ---
 
@@ -710,12 +808,12 @@ Model: claude-sonnet-4-6. API key: `ANTHROPIC_API_KEY` from `.env` via python-do
 ```python
 def explain(pump, weights, scores, risk_factor, predicted_rul, ci_low, ci_high,
             asset_type="KSB Calio 30-40", failure_modes=None,
-            sensor_context=None) -> str
+            sensor_context=None, retrieved_context=None) -> str
 ```
 
 Prompt includes: asset ID and type, all 5 AHP criteria weights by name, all 5 per-criterion risk scores on 1-9 Saaty scale, overall risk factor out of 9, predicted RUL in years + confidence interval, key telemetry indicators, known failure modes.
 
-When `sensor_context` is provided (uploaded mode), telemetry fields in the prompt are built from the dict keys rather than hardcoded field names. When `failure_modes` is provided, the hardcoded failure mode list is replaced. All three optional parameters have defaults that preserve existing behavior for default fleet callers.
+When `sensor_context` is provided (uploaded mode), telemetry fields in the prompt are built from the dict keys rather than hardcoded field names. When `failure_modes` is provided, the hardcoded failure mode list is replaced. When `retrieved_context` is provided and `retrieval_available` is True, a RETRIEVED MAINTENANCE KNOWLEDGE block is injected containing failure precedents and maintenance guidance, with an instruction to cite the most relevant precedent by describing the case. All four optional parameters have defaults that preserve existing behavior for default fleet callers.
 
 Returns plain text string only. Strip whitespace. On API failure: raise RuntimeError.
 
@@ -833,7 +931,7 @@ When explain requested (uploaded mode):
 |---|---|---|---|
 | AHPMatrix | AHPMatrix.jsx | both | 5x5 pairwise matrix with CR validation |
 | ManualScoreInputs | ManualScoreInputs.jsx | both | C1/C4 manual inputs (labels from config in uploaded mode) |
-| DataUpload | DataUpload.jsx | default | CSV/JSON upload for KSB pump data |
+| DataUpload | DataUpload.jsx | not rendered | CSV/JSON upload for KSB pump data (component exists but removed from default layout) |
 | WeightDisplay | WeightDisplay.jsx | default | Recharts bar chart of criterion weights |
 | AssetRegistry | AssetRegistry.jsx | default | Pump table with expandable detail rows |
 | RiskRanking | RiskRanking.jsx | default | Ranked risk table + color-coded bar chart |
@@ -900,7 +998,7 @@ API_BASE_URL=http://localhost:8000
 
 | Constraint | Reason |
 |---|---|
-| telemetry_aggregator.py is the sole data source for the default fleet | pumps.json is not used anywhere |
+| telemetry_aggregator.py is the sole data source for the default fleet |
 | Frozen files must not be modified | AHP and default RUL logic is stable and tested |
 | age_years = total_runtime_hours / 22 / 365 | Not derived from install_date |
 | Full AHP weight vector [w1-w5] as 5 separate features | Never collapse to scalar |
@@ -919,6 +1017,10 @@ API_BASE_URL=http://localhost:8000
 | schema_inferrer validates all column names Claude returns | Prevents hallucinated column names breaking the pipeline |
 | Feature vector length is variable across uploads but fixed per model | Bundle stores feature_names alongside model for inference validation |
 | RUL target column name from criteria_config["column_roles"]["rul_target"] | Never hardcode "True_RUL_Days" |
+| RAG knowledge base is never required | Missing or empty knowledge base is graceful degradation, never a failure |
+| retriever.py catches RuntimeError and returns retrieval_available=False | No RAG failure may block the upload or explain pipeline |
+| CriteriaConfigs are stored after every successful inference | Builds retrieval context for future uploads of similar asset types |
+| Failure case markdown is auto-generated after successful training | Accumulates domain knowledge for future RAG retrieval |
 
 ---
 
@@ -950,7 +1052,10 @@ Prerequisites before starting backend:
 pip install -r requirements.txt
 python data/generate_maintenance_log.py   (generates telemetry + maintenance log)
 python -m rul.train                       (generates rul/model.pkl)
+python -m rag.ingest                      (optional: builds RAG knowledge base)
 macOS: brew install libomp                (required for XGBoost)
 ```
 
 The dynamic model (`rul/dynamic_model.pkl`) is not run at startup. It is trained automatically when a file is uploaded via the dashboard's uploaded asset mode.
+
+The RAG knowledge base (`rag/chroma_db/`) is optional. If not built, the upload pipeline and explainer work identically to before -- RAG retrieval returns `retrieval_available=False` and no context is injected. To populate it, place PDF manuals in `docs/manuals/` and/or failure case markdown in `docs/failure_cases/`, then run `python -m rag.ingest`. Use `--rebuild` to force a full rebuild. CriteriaConfigs are stored automatically in `rag/stored_configs/` after each successful upload analysis.

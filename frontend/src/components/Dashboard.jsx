@@ -309,12 +309,6 @@ export default function Dashboard() {
             onManualScoresUpdate={handleManualScoresUpdate}
           />
 
-          <DataUpload
-            onDataLoaded={handleDataLoaded}
-            onReset={handleDataReset}
-            uploadInfo={uploadInfo}
-          />
-
           <section className="kpi-grid">
             <div className="kpi-card">
               <span className="kpi-label">Avg Risk Score</span>

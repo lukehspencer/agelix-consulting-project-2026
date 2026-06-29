@@ -25,6 +25,7 @@ def explain(
     asset_type: str = "KSB Calio 30-40",
     failure_modes: list = None,
     sensor_context: dict = None,
+    retrieved_context: dict = None,
 ) -> str:
     if sensor_context is not None:
         telemetry_lines = "\n".join(
@@ -47,6 +48,22 @@ def explain(
         failure_block = f"Known Failure Modes for KSB Calio 30-40:\n{fm_lines}"
 
     asset_id = pump.get("asset_id", "unknown")
+
+    rag_block = ""
+    cite_instruction = ""
+    if retrieved_context and retrieved_context.get("retrieval_available"):
+        rag_parts = []
+        if retrieved_context.get("failure_precedents"):
+            rag_parts.append("Failure Precedents:")
+            for chunk in retrieved_context["failure_precedents"]:
+                rag_parts.append(f"  - {chunk}")
+        if retrieved_context.get("maintenance_guidance"):
+            rag_parts.append("Maintenance Standards:")
+            for chunk in retrieved_context["maintenance_guidance"]:
+                rag_parts.append(f"  - {chunk}")
+        if rag_parts:
+            rag_block = "\nRETRIEVED MAINTENANCE KNOWLEDGE:\n" + "\n".join(rag_parts) + "\n"
+            cite_instruction = " If relevant, cite the most relevant precedent by describing the case (do not quote verbatim)."
 
     prompt = f"""You are an asset reliability engineer analyzing a {asset_type}.
 
@@ -73,8 +90,8 @@ Confidence Interval: {ci_low} to {ci_high} years
 {telemetry_block}
 
 {failure_block}
-
-In 3-4 sentences explain why this pump has this RUL estimate, what the biggest risk drivers are given the AHP weights, and what maintenance action should be prioritized immediately."""
+{rag_block}
+In 3-4 sentences explain why this pump has this RUL estimate, what the biggest risk drivers are given the AHP weights, and what maintenance action should be prioritized immediately.{cite_instruction}"""
 
     try:
         client = anthropic.Anthropic()
