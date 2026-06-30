@@ -244,9 +244,10 @@ Path: `data/raw/maintenance/maintenance_log.xlsx`
 
 Path: `data/raw/uploads/<filename>`
 
-Two-sheet Excel format:
-- Sheet 1: **Operational Telemetry** -- one row per asset per day
-- Sheet 2: **Failure & Maintenance Logs** -- one row per event
+**Accepted format: .xlsx only. CSV is not supported.**
+Two sheets required with exact names (case-sensitive):
+- Sheet 1: **`Operational Telemetry`** -- one row per asset per day
+- Sheet 2: **`Failure & Maintenance Logs`** -- one row per event
 
 Column detection is heuristic -- no specific column names are required. `upload_schema.py` detects roles by keyword matching:
 - Asset ID: column name contains "id" (case-insensitive)
@@ -257,6 +258,13 @@ Column detection is heuristic -- no specific column names are required. `upload_
 - Sensor columns: all remaining numeric columns (minimum 2 required)
 
 If a role cannot be detected, validation fails with an error message listing all column names found so the user knows what to rename.
+
+**Minimum Data Requirements:**
+- Minimum 10 rows total in the telemetry sheet (enforced by validation)
+- Minimum 2 numeric sensor columns beyond the 4 role columns
+- At least 1 row in the log sheet (empty log sheet is tolerated but reduces scoring quality)
+- Asset IDs in the log must match asset IDs in telemetry (orphan IDs cause validation failure)
+- Recommended: 30+ rows per asset for reliable XGBoost RUL training
 
 ---
 
@@ -581,6 +589,10 @@ Validates uploaded Excel files against the two-sheet contract. Detects column ro
 
 Makes one Anthropic API call (claude-sonnet-4-6, max_tokens=2500) with the full schema_summary. Accepts an optional `retrieved_context: dict` parameter. When provided and `retrieval_available` is True, a RETRIEVED DOMAIN KNOWLEDGE block is injected into the prompt between the sensor statistics and TASK sections, containing `standards_chunks`, `similar_configs`, and `failure_case_chunks` from the RAG pipeline. Claude returns a CriteriaConfig JSON dict -- the single source of truth for all downstream files. After parsing, validates every column name Claude returns against schema_summary to prevent hallucinated names from breaking the pipeline. Raises `RuntimeError` on API failure or invalid response. All existing behavior is unchanged when `retrieved_context` is None.
 
+**failure_event_values fallback:** If Claude returns an empty `failure_event_values` list, the inferrer automatically populates it by scanning `schema_summary["log_event_type_values"]` for entries containing "fail", "fault", "error", or "breakdown" (case-insensitive). If no keyword matches, the first value in the list is used as fallback. Only raises an error if `log_event_type_values` itself is empty.
+
+**Markdown fence stripping:** Claude's response is stripped of any leading ` ```json ` / ` ``` ` fences before JSON parsing.
+
 ### column_resolver.py
 
 The single centralized module for all column lookups. Any file that reads a column from a data row must use this module -- never index by a hardcoded column name string.
@@ -594,7 +606,7 @@ get_sensor_columns(criteria_config) -> list[str]
 
 ### dynamic_aggregator.py
 
-Reads an uploaded Excel file and produces one asset snapshot dict per unique asset. For each asset: sorts by date column, computes rolling mean/std for every sensor column, takes the last row as the snapshot. From the log sheet, counts failures in last 90 days, total failure count, and days since last event. Sensor values and rolling features are keyed by actual column names from the data, not normalized names.
+Reads an uploaded Excel file and produces one asset snapshot dict per unique asset. For each asset: sorts by date column, computes rolling mean/std for every sensor column, then takes the row at **70% through the asset's data** (`index = int(len(asset_rows) * 0.7)`) as the snapshot. This captures a mid-life observation with meaningful remaining RUL rather than the near-zero value at end of life. From the log sheet, counts failures in last 90 days, total failure count, and days since last event. Sensor values and rolling features are keyed by actual column names from the data, not normalized names.
 
 ---
 
@@ -620,7 +632,7 @@ Loads and chunks all three document types. Returns a list of dicts with `content
 
 ### knowledge_base.py
 
-Manages the ChromaDB vector store at `rag/chroma_db/` using SentenceTransformer(`all-MiniLM-L6-v2`) embeddings.
+Manages the ChromaDB vector store at `rag/chroma_db/` using `chromadb.utils.embedding_functions.DefaultEmbeddingFunction()` (onnxruntime-based, ~50 MB). **Note:** an earlier version used `SentenceTransformer("all-MiniLM-L6-v2")` (PyTorch, ~3 GB). If you see `sentence-transformers` referenced anywhere, it has been replaced -- do not re-add it as it inflates the Docker image size prohibitively.
 
 ```python
 build_knowledge_base(force_rebuild=False) -> int
@@ -872,6 +884,7 @@ POST /upload/predict-all body:
 {"file_path": "data/raw/uploads/file.xlsx", "weights": [0.35, 0.25, 0.2, 0.12, 0.08],
  "cr": 0.07, "manual_scores": {"C1": 7, "C4": 6}, "model_path": "rul/dynamic_model.pkl"}
 ```
+`weights` length must match the number of criteria in the stored CriteriaConfig (3-7). The endpoint uses `range(n_criteria)` internally -- never hardcodes 5.
 
 POST /upload/explain body:
 ```json
@@ -920,7 +933,7 @@ When file uploaded and analyzed (uploaded mode):
   criteriaConfig set -> uploadedAssets populated with scores (no RUL yet)
 
 When predict-all runs (uploaded mode):
-  predictedAssets set with RUL values in months
+  predictedAssets set with RUL values in years (converted to days at display layer)
 
 When explain requested (uploaded mode):
   uploadedExplanations updated for that asset_id with sensor_context from CriteriaConfig
@@ -929,7 +942,7 @@ When explain requested (uploaded mode):
 
 | Component | File | Mode | Purpose |
 |---|---|---|---|
-| AHPMatrix | AHPMatrix.jsx | both | 5x5 pairwise matrix with CR validation |
+| AHPMatrix | AHPMatrix.jsx | both | NxN pairwise matrix with CR validation (5x5 in default mode; NxN in uploaded mode where N = criteria count from CriteriaConfig, 3-7) |
 | ManualScoreInputs | ManualScoreInputs.jsx | both | C1/C4 manual inputs (labels from config in uploaded mode) |
 | DataUpload | DataUpload.jsx | not rendered | CSV/JSON upload for KSB pump data (component exists but removed from default layout) |
 | WeightDisplay | WeightDisplay.jsx | default | Recharts bar chart of criterion weights |
@@ -1021,6 +1034,8 @@ API_BASE_URL=http://localhost:8000
 | retriever.py catches RuntimeError and returns retrieval_available=False | No RAG failure may block the upload or explain pipeline |
 | CriteriaConfigs are stored after every successful inference | Builds retrieval context for future uploads of similar asset types |
 | Failure case markdown is auto-generated after successful training | Accumulates domain knowledge for future RAG retrieval |
+| Only .xlsx files are accepted for upload | CSV parsing adds complexity with no benefit given the two-sheet requirement |
+| Minimum 10 telemetry rows required | Insufficient data produces unreliable rolling features and model training |
 
 ---
 
@@ -1033,9 +1048,9 @@ API_BASE_URL=http://localhost:8000
 - CR > 0.10 must always surface a warning -- never silently proceed
 - clamp() and convert_to_saaty() live in ahp/criteria_scoring.py
 - No em dashes in UI
-- RUL displayed in months in the UI (rul_years * 12), backend always returns years
-- RUL color thresholds: green > 120mo, yellow 60-120mo, red < 60mo
-- Progress bar max = 240 months (20 years * 12)
+- RUL displayed in **days** in the UI (Math.round(rul_years * 365)), backend always returns years
+- RUL color thresholds: green > 365 days, yellow 180-365 days, red < 180 days
+- Progress bar max = 7300 days (20 years * 365)
 
 ---
 
@@ -1054,6 +1069,11 @@ python data/generate_maintenance_log.py   (generates telemetry + maintenance log
 python -m rul.train                       (generates rul/model.pkl)
 python -m rag.ingest                      (optional: builds RAG knowledge base)
 macOS: brew install libomp                (required for XGBoost)
+```
+
+Run tests:
+```
+python -m pytest tests/
 ```
 
 The dynamic model (`rul/dynamic_model.pkl`) is not run at startup. It is trained automatically when a file is uploaded via the dashboard's uploaded asset mode.

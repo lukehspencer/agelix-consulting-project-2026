@@ -1,13 +1,19 @@
 import { useState, useRef } from 'react'
-import useUpload from '../hooks/useUpload'
 
-export default function UploadPanel({ onAssetsReady, ahpValid, ahpWeights, ahpCr }) {
-  const {
-    uploadStatus, criteriaConfig, trainingResult,
-    uploadedAssets, predictedAssets, modelPath, errorMessage,
-    uploadAndAnalyze, predictAll, resetUpload,
-  } = useUpload()
-
+export default function UploadPanel({
+  uploadStatus,
+  criteriaConfig,
+  trainingResult,
+  errorMessage,
+  isPredicting,
+  hasPredictions,
+  onAnalyze,
+  onPredict,
+  onReset,
+  ahpValid,
+  ahpWeights,
+  ahpCr,
+}) {
   const [selectedFile, setSelectedFile] = useState(null)
   const [manualScores, setManualScores] = useState({})
   const [isDragOver, setIsDragOver] = useState(false)
@@ -37,11 +43,14 @@ export default function UploadPanel({ onAssetsReady, ahpValid, ahpWeights, ahpCr
 
   async function handleAnalyze() {
     if (!selectedFile) return
-    await uploadAndAnalyze(selectedFile)
+    await onAnalyze(selectedFile)
   }
 
   async function handlePredict() {
-    const weights = ahpWeights ?? [0.2, 0.2, 0.2, 0.2, 0.2]
+    console.log('[UploadPanel] Run Risk & RUL Analysis clicked', { ahpValid, ahpWeights, ahpCr })
+
+    const n = criteriaConfig?.criteria?.length ?? 5
+    const weights = ahpWeights ?? Array(n).fill(+(1 / n).toFixed(6))
     const cr = ahpCr ?? 0.0
     const scores = { ...manualScores }
 
@@ -53,11 +62,13 @@ export default function UploadPanel({ onAssetsReady, ahpValid, ahpWeights, ahpCr
       }
     }
 
-    await predictAll(weights, cr, scores)
+    console.log('[UploadPanel] calling onPredict with:', { weights, cr, scores })
+    await onPredict(weights, cr, scores)
+    console.log('[UploadPanel] onPredict returned')
   }
 
   function handleReset() {
-    resetUpload()
+    onReset()
     setSelectedFile(null)
     setManualScores({})
   }
@@ -65,10 +76,6 @@ export default function UploadPanel({ onAssetsReady, ahpValid, ahpWeights, ahpCr
   const isAnalyzing = uploadStatus === 'uploading' || uploadStatus === 'analyzing' || uploadStatus === 'training'
   const isReady = uploadStatus === 'ready'
   const isError = uploadStatus === 'error'
-
-  if (predictedAssets.length > 0 && onAssetsReady) {
-    onAssetsReady(predictedAssets, criteriaConfig, modelPath)
-  }
 
   return (
     <section className="card upload-panel">
@@ -182,22 +189,23 @@ export default function UploadPanel({ onAssetsReady, ahpValid, ahpWeights, ahpCr
               ))}
             </div>
 
-            {/* Section 3: Failure Modes */}
-            {criteriaConfig.failure_modes && (
-              <div className="failure-modes-strip">
-                Identified Failure Modes: {criteriaConfig.failure_modes.join(' . ')}
+
+
+            {errorMessage && !isPredicting && (
+              <div className="upload-predict-error">
+                {errorMessage}
               </div>
             )}
 
             <div className="upload-panel-actions">
               <button
                 className="btn-primary"
-                disabled={!ahpValid}
+                disabled={!ahpValid || isPredicting}
                 onClick={handlePredict}
               >
-                Run Risk and RUL Analysis
+                {isPredicting ? 'Running analysis...' : 'Run Risk and RUL Analysis'}
               </button>
-              <button className="btn-reset" onClick={handleReset}>
+              <button className="btn-reset" onClick={handleReset} disabled={isPredicting}>
                 Reset
               </button>
             </div>

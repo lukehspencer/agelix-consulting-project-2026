@@ -1245,6 +1245,16 @@ body {
   font-size: 0.9rem;
 }
 
+.upload-predict-error {
+  padding: 0.6rem 0.85rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 0.4rem;
+  color: #b91c1c;
+  font-size: 0.82rem;
+  margin-bottom: 0.75rem;
+}
+
 .upload-error-block {
   padding: 1rem;
   background: #fef2f2;
@@ -1405,9 +1415,113 @@ body {
 .dyn-yellow { background: #eab308; }
 .dyn-green { background: #22c55e; }
 
-.dyn-explanation {
-  padding: 1rem 1.25rem;
-  font-size: 0.85rem;
-  line-height: 1.6;
-  color: #334155;
+/* ── Explanation popup (uploaded mode) ──────────────────────────────────── */
+
+.explain-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 2rem;
+  z-index: 200;
 }
+
+.explain-popup {
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.18);
+  width: 100%;
+  max-width: 700px;
+  margin: 0 1rem;
+  overflow: hidden;
+}
+
+.explain-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.explain-popup-asset-id {
+  font-weight: 700;
+  font-size: 14px;
+  color: #0f172a;
+  margin-right: 10px;
+}
+
+.explain-popup-asset-type {
+  font-size: 12px;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.explain-popup-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  color: #94a3b8;
+  padding: 0 4px;
+  margin-left: auto;
+}
+
+.explain-popup-close:hover { color: #0f172a; }
+
+.explain-stats-row {
+  display: flex;
+  gap: 0;
+  padding: 12px 18px;
+  background: #f8fafc;
+}
+
+.explain-stat-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px;
+  border-right: 1px solid #e2e8f0;
+}
+
+.explain-stat-box:first-child { padding-left: 0; }
+.explain-stat-box:last-child  { border-right: none; }
+
+.explain-stat-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+}
+
+.explain-stat-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.explain-popup-divider {
+  height: 1px;
+  background: #e2e8f0;
+  margin: 0 18px;
+}
+
+.explain-popup-body {
+  padding: 14px 18px 18px;
+}
+
+.explain-popup-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #334155;
+  max-width: 65ch;
+  margin: 0;
+}
+

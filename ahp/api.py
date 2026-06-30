@@ -32,9 +32,12 @@ class MatrixInput(BaseModel):
 
     @field_validator("matrix")
     @classmethod
-    def must_be_5x5(cls, v: list) -> list:
-        if len(v) != 5 or any(len(row) != 5 for row in v):
-            raise ValueError("matrix must be 5×5")
+    def must_be_nxn(cls, v: list) -> list:
+        n = len(v)
+        if not (3 <= n <= 7):
+            raise ValueError(f"matrix must have 3–7 rows, got {n}")
+        if any(len(row) != n for row in v):
+            raise ValueError(f"matrix must be square ({n}×{n})")
         return v
 
 

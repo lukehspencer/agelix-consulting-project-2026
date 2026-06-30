@@ -1,8 +1,8 @@
-const EXPECTED_LIFESPAN_MONTHS = 240
+const EXPECTED_LIFESPAN_DAYS = 7300  // 20 years * 365
 
-function rulColor(months) {
-  if (months > 120) return 'rul-green'
-  if (months >= 60) return 'rul-yellow'
+function rulColor(days) {
+  if (days > 365) return 'rul-green'
+  if (days >= 180) return 'rul-yellow'
   return 'rul-red'
 }
 
@@ -45,11 +45,11 @@ export default function RULDisplay({ assets, rulPredictions, isLoadingPrediction
           const pred = rulPredictions[asset.asset_id]
           if (!pred) return null
 
-          const months = pred.rul_years * 12
-          const ciLowMonths = pred.ci_low * 12
-          const ciHighMonths = pred.ci_high * 12
-          const pct = Math.min((months / EXPECTED_LIFESPAN_MONTHS) * 100, 100)
-          const colorClass = rulColor(months)
+          const days = Math.round(pred.rul_years * 365)
+          const ciLowDays = Math.round(pred.ci_low * 365)
+          const ciHighDays = Math.round(pred.ci_high * 365)
+          const pct = Math.min((days / EXPECTED_LIFESPAN_DAYS) * 100, 100)
+          const colorClass = rulColor(days)
 
           return (
             <div key={asset.asset_id} className={`rul-card ${colorClass}`}>
@@ -64,8 +64,8 @@ export default function RULDisplay({ assets, rulPredictions, isLoadingPrediction
                 />
               </div>
               <div className="rul-values">
-                <span className="rul-main">{months.toFixed(1)} months</span>
-                <span className="rul-ci">{ciLowMonths.toFixed(1)} to {ciHighMonths.toFixed(1)} months</span>
+                <span className="rul-main">{days} days</span>
+                <span className="rul-ci">{ciLowDays} to {ciHighDays} days</span>
               </div>
             </div>
           )

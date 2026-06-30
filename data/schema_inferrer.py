@@ -60,11 +60,12 @@ FAILURE & MAINTENANCE LOG:
 - Event type column name: {s.get("log_event_type_column", "unknown")}
 - Unique event type values found: {s.get("log_event_type_values", [])}
 - Additional log columns and sample values: {extra_samples}
+- Available log sheet column names (use ONLY these exact names): {list((s.get("log_extra_columns") or []) + [c for c in [s.get("log_asset_id_column"), s.get("log_date_column"), s.get("log_event_type_column")] if c])}
 {rag_block}
 TASK:
-Design between 3 and 7 AHP criteria for this asset type, labeled C1 through CN.
-Choose the number of criteria that best fits the data -- use more criteria when
-the sensor columns cover distinct failure modes, fewer when the data is sparse.
+Design between 5 and 7 AHP criteria, choosing the number that best represents
+the distinct risk dimensions present in the data. Use exactly 5 if the data
+supports it, more only if genuinely distinct additional risk dimensions exist.
 Rules:
 1. At least 1 and at most 2 criteria must be marked manual_input: true.
    The rest must be derived from the sensor columns listed above.
@@ -164,15 +165,14 @@ def _validate_config(config: dict, schema_summary: dict) -> None:
                 f"for role '{role}'. Valid columns: {all_tel_cols}"
             )
 
-    all_log_cols = []
-    if schema_summary.get("log_asset_id_column"):
-        all_log_cols.append(schema_summary["log_asset_id_column"])
-    if schema_summary.get("log_date_column"):
-        all_log_cols.append(schema_summary["log_date_column"])
-    if schema_summary.get("log_event_type_column"):
-        all_log_cols.append(schema_summary["log_event_type_column"])
-    all_log_cols.extend(schema_summary.get("log_extra_columns", []))
-    all_log_lower = {c.lower(): c for c in all_log_cols}
+    all_log_columns = (
+        [schema_summary["log_asset_id_column"]] +
+        [schema_summary["log_date_column"]] +
+        [schema_summary["log_event_type_column"]] +
+        schema_summary.get("log_extra_columns", [])
+    )
+    all_log_columns = [c for c in all_log_columns if c]
+    all_log_lower = {c.lower(): c for c in all_log_columns}
 
     log_roles = ["log_asset_id", "log_date", "log_event_type", "log_component"]
     for role in log_roles:
@@ -182,11 +182,11 @@ def _validate_config(config: dict, schema_summary: dict) -> None:
         if val.lower() not in all_log_lower:
             raise RuntimeError(
                 f"Schema inferrer: Claude returned unknown log column '{val}' "
-                f"for role '{role}'. Valid log columns: {all_log_cols}"
+                f"for role '{role}'. Valid log columns: {all_log_columns}"
             )
 
     criteria = config.get("criteria", [])
-    if not (3 <= len(criteria) <= 7):
+    if len(criteria) < 3 or len(criteria) > 7:
         raise RuntimeError(
             f"Schema inferrer: expected 3-7 criteria, got {len(criteria)}."
         )
@@ -236,9 +236,19 @@ def _validate_config(config: dict, schema_summary: dict) -> None:
 
     fev = config.get("failure_event_values", [])
     if not fev:
-        raise RuntimeError(
-            "Schema inferrer: failure_event_values must be a non-empty list."
-        )
+        log_event_values = schema_summary.get("log_event_type_values", [])
+        if not log_event_values:
+            print(f"[DEBUG] log_event_type_values: {log_event_values!r}")
+            print(f"[DEBUG] failure_event_values: {config.get('failure_event_values')!r}")
+            raise RuntimeError(
+                "Schema inferrer: failure_event_values must be a non-empty list."
+            )
+        _FAILURE_KEYWORDS = ("fail", "fault", "error", "breakdown")
+        matched = [
+            v for v in log_event_values
+            if any(kw in v.lower() for kw in _FAILURE_KEYWORDS)
+        ]
+        config["failure_event_values"] = matched if matched else [log_event_values[0]]
 
 
 def infer_criteria_config(schema_summary: dict, retrieved_context: dict = None) -> dict:
@@ -254,6 +264,13 @@ def infer_criteria_config(schema_summary: dict, retrieved_context: dict = None) 
         raw_text = message.content[0].text.strip()
     except Exception as exc:
         raise RuntimeError(f"Anthropic API call failed: {exc}") from exc
+
+    raw_text = raw_text.strip()
+    if raw_text.startswith("```"):
+        raw_text = raw_text.split("```")[1]
+        if raw_text.startswith("json"):
+            raw_text = raw_text[4:]
+    raw_text = raw_text.strip()
 
     try:
         config = json.loads(raw_text)

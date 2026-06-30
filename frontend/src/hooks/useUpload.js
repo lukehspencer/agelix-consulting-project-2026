@@ -8,11 +8,15 @@ export default function useUpload() {
   const [uploadedAssets, setUploadedAssets] = useState([])
   const [predictedAssets, setPredictedAssets] = useState([])
   const [modelPath, setModelPath] = useState(null)
+  const [uploadedFileName, setUploadedFileName] = useState(null)
   const [errorMessage, setErrorMessage] = useState(null)
+  const [isPredicting, setIsPredicting] = useState(false)
 
   const uploadAndAnalyze = useCallback(async (file) => {
     setUploadStatus('uploading')
     setErrorMessage(null)
+    setUploadedFileName(file.name)
+    console.log('[useUpload] uploadAndAnalyze: file =', file.name)
 
     const formData = new FormData()
     formData.append('file', file)
@@ -46,36 +50,57 @@ export default function useUpload() {
   }, [])
 
   const predictAll = useCallback(async (weights, cr, manualScores) => {
-    if (!modelPath || !schemaSummary) return
+    console.log('[useUpload] predictAll called with weights:', weights, '| cr:', cr, '| manualScores:', manualScores)
+
+    if (!modelPath || !uploadedFileName) {
+      console.warn('[useUpload] predictAll: missing modelPath or uploadedFileName — aborting', { modelPath, uploadedFileName })
+      return
+    }
+
+    setIsPredicting(true)
+    setErrorMessage(null)
+
+    const resolvedFilePath = `data/raw/uploads/${uploadedFileName}`
 
     try {
-      const filePath = schemaSummary._file_path ?? uploadedAssets[0]?._file_path
-      const analyzeAsset = uploadedAssets[0] ?? {}
-      const resolvedFilePath = filePath ?? `data/raw/uploads/${analyzeAsset.asset_id ?? 'unknown'}.xlsx`
+      const body = {
+        file_path: resolvedFilePath,
+        weights,
+        cr,
+        manual_scores: manualScores,
+        model_path: modelPath,
+      }
+      console.log('[useUpload] predictAll: POST /upload/predict-all body =', JSON.stringify(body))
 
       const res = await fetch('/upload/predict-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          file_path: resolvedFilePath,
-          weights,
-          cr,
-          manual_scores: manualScores,
-          model_path: modelPath,
-        }),
+        body: JSON.stringify(body),
       })
 
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
-        throw new Error(detail?.detail ?? `Predict failed (${res.status})`)
+        const errBody = await res.json().catch(() => ({}))
+        console.error('[useUpload] predictAll: error response', res.status, errBody)
+        const d = errBody?.detail
+        const msg = typeof d === 'string'
+          ? d
+          : Array.isArray(d)
+            ? d.map(e => e?.msg ?? String(e)).join('; ')
+            : `Predict failed (${res.status})`
+        throw new Error(msg)
       }
 
       const data = await res.json()
+      console.log('[useUpload] predictAll: response weights used, assets count =', data.assets?.length,
+        '| first asset risk_factor =', data.assets?.[0]?.risk_factor)
       setPredictedAssets(data.assets)
     } catch (err) {
+      console.error('[useUpload] predictAll: caught error =', err.message)
       setErrorMessage(err.message)
+    } finally {
+      setIsPredicting(false)
     }
-  }, [modelPath, schemaSummary, uploadedAssets])
+  }, [modelPath, uploadedFileName])
 
   const explainAsset = useCallback(async (assetPayload) => {
     if (!criteriaConfig) return null
@@ -98,12 +123,13 @@ export default function useUpload() {
       }
     }
 
+    const n = criteriaConfig?.criteria?.length ?? 5
     const body = {
       pump: assetPayload,
-      weights: assetPayload.weights ?? [0.2, 0.2, 0.2, 0.2, 0.2],
+      weights: assetPayload.weights ?? Array(n).fill(+(1 / n).toFixed(6)),
       scores: assetPayload.scores
         ? Object.values(assetPayload.scores)
-        : [5, 5, 5, 5, 5],
+        : Array(n).fill(5),
       risk_factor: assetPayload.risk_factor ?? 5.0,
       predicted_rul: assetPayload.rul_years ?? 0,
       ci_low: assetPayload.ci_low ?? 0,
@@ -141,7 +167,9 @@ export default function useUpload() {
     setUploadedAssets([])
     setPredictedAssets([])
     setModelPath(null)
+    setUploadedFileName(null)
     setErrorMessage(null)
+    setIsPredicting(false)
   }, [])
 
   return {
@@ -153,6 +181,7 @@ export default function useUpload() {
     predictedAssets,
     modelPath,
     errorMessage,
+    isPredicting,
     uploadAndAnalyze,
     predictAll,
     explainAsset,

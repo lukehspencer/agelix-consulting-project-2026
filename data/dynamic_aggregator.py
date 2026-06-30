@@ -55,7 +55,8 @@ def aggregate_uploaded_data(file_path: str,
                 asset_tel[col].rolling(rolling_window, min_periods=1).std().fillna(0.0)
             )
 
-        snapshot = asset_tel.iloc[-1]
+        snapshot_idx = int(len(asset_tel) * 0.7)
+        snapshot = asset_tel.iloc[snapshot_idx]
         snapshot_date = snapshot[date_col]
         snapshot_dict = snapshot.to_dict()
 

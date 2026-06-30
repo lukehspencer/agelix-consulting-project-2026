@@ -206,8 +206,9 @@ def predict_all(body: PredictAllInput):
         scores_result = score_asset_dynamic(snap, criteria_config, body.manual_scores)
         raw_scores = scores_result.pop("raw_scores")
 
-        saaty_list = [scores_result[f"C{i+1}"] for i in range(5)]
-        weighted_scores = [body.weights[i] * saaty_list[i] for i in range(5)]
+        n_criteria = len(criteria_config.get("criteria", []))
+        saaty_list = [scores_result[f"C{i+1}"] for i in range(n_criteria)]
+        weighted_scores = [body.weights[i] * saaty_list[i] for i in range(n_criteria)]
         risk_factor = sum(weighted_scores)
 
         vec = build_dynamic_feature_vector(

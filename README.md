@@ -129,9 +129,9 @@ Runs at `http://localhost:5173`. Vite proxies `/ahp/*`, `/rul/*`, and `/upload/*
 
 ### AHP Risk Scoring
 
-The user fills a 5x5 pairwise comparison matrix in the dashboard, following Saaty's 1-9 scale. The engine derives a weight vector from the matrix and validates consistency using the Consistency Ratio (CR). A CR above 0.10 indicates an inconsistent matrix -- the dashboard surfaces a warning and blocks RUL predictions until the matrix is corrected.
+The user fills a pairwise comparison matrix in the dashboard, following Saaty's 1-9 scale. The engine derives a weight vector from the matrix and validates consistency using the Consistency Ratio (CR). A CR above 0.10 indicates an inconsistent matrix -- the dashboard surfaces a warning and blocks RUL predictions until the matrix is corrected.
 
-Each asset is scored against 5 criteria (C1-C5) on a 1-10 internal scale, converted to the 1-9 Saaty scale. The overall risk factor is the dot product of the weight vector and score vector, producing a score from 1 to 9 per asset. Higher scores indicate higher risk.
+In default fleet mode the matrix is always 5x5 (five fixed criteria). In upload mode the matrix is NxN where N is the number of criteria inferred by Claude for the uploaded asset type (3--7). Each asset is scored on a 1-10 internal scale, converted to the 1-9 Saaty scale. The overall risk factor is the dot product of the weight vector and score vector, producing a score from 1 to 9 per asset. Higher scores indicate higher risk.
 
 In the default fleet mode, three criteria are derived automatically from sensor telemetry and two are manual inputs with defaults based on the KSB Calio operational context. In upload mode, no criteria are hardcoded -- the Anthropic API analyzes the uploaded data, infers appropriate criteria names and scoring thresholds for the detected asset type, and stores them in a CriteriaConfig that drives the entire scoring pipeline.
 
@@ -139,7 +139,7 @@ In the default fleet mode, three criteria are derived automatically from sensor 
 
 The XGBoost model is trained on daily telemetry rows from the KSB dataset (1,095 days x 5 pumps). Each training sample is a 24-feature vector combining raw asset variables, the full AHP weight vector, the AHP weighted score vector, the overall risk factor, and 5 rolling telemetry features. The training target is `True_RUL_Days / 365` (years).
 
-At inference time, the raw model prediction is adjusted by the AHP risk factor: `RUL_adjusted = RUL_raw x (1 - (risk_factor - 1) / 8)`. This means a higher risk score directly reduces predicted remaining life. RUL is displayed in months in the dashboard; the backend always returns years.
+At inference time, the raw model prediction is adjusted by the AHP risk factor: `RUL_adjusted = RUL_raw x (1 - (risk_factor - 1) / 8)`. This means a higher risk score directly reduces predicted remaining life. RUL is displayed in **days** in the dashboard (`rul_years * 365`); the backend always returns years. Color thresholds: green &gt; 365 days, yellow 180--365 days, red &lt; 180 days.
 
 ### Dynamic Asset Upload
 
@@ -185,7 +185,7 @@ The FastAPI backend exposes three routers.
 
 | Method | Route | Description |
 |---|---|---|
-| POST | `/ahp/calculate-weights` | 5x5 matrix -> weights, CR, valid flag |
+| POST | `/ahp/calculate-weights` | NxN matrix (3-7 criteria) -> weights, CR, valid flag |
 | POST | `/ahp/score-asset` | Asset variables -> C1-C5 scores |
 | POST | `/ahp/risk-factor` | Weights + scores -> risk factor |
 | GET | `/ahp/assets` | All default fleet assets ranked by risk score |
@@ -215,6 +215,8 @@ Full request/response schemas are available at `http://localhost:8000/docs` when
 
 The upload endpoint accepts a two-sheet Excel file (`.xlsx`). Column names are flexible -- the system detects roles by keyword matching and Claude infers scoring logic from the actual data. The only structural requirements are the two sheet names and the presence of detectable role columns.
 
+**Accepted file format: .xlsx (Excel) only. CSV is not supported.**
+
 ### Sheet 1: `Operational Telemetry`
 
 | Role | Detection keywords | Required |
@@ -235,6 +237,28 @@ The upload endpoint accepts a two-sheet Excel file (`.xlsx`). Column names are f
 | Component, root cause, etc. | any remaining columns | No |
 
 If a required role cannot be detected, the validation error message lists all column names found in the file so you know what to rename.
+
+### Example Column Names
+
+| Role | Example column names that work |
+|---|---|
+| Asset identifier | Pump_ID, Asset_ID, Equipment_ID, Unit_ID |
+| Timestamp | Date, Timestamp, Event_Date, Reading_Date |
+| RUL target | True_RUL_Days, Remaining_Life_Hours, TTF_Days, RUL |
+| Operating hours | Operating_Hours, Runtime_Hours, Cumulative_Hours, Cycles |
+| Sensor readings | Any numeric column not matching the above roles |
+| Log event type | Event_Type, Status, Category, Failure_Type |
+
+If validation fails, the error message lists all column names detected in your file so you know exactly what to rename.
+
+### Tips for Preparing Your Data
+
+- One row per asset per day in the Operational Telemetry sheet
+- Minimum 30 rows per asset recommended for reliable RUL training
+- The more historical data included, the better the model accuracy
+- Failure & Maintenance Logs sheet can have as few as 1 row
+- All numeric sensor columns are automatically used as AHP features
+- Column names can be in any format -- detection is keyword-based
 
 ---
 
@@ -298,7 +322,7 @@ Never commit `.env`. The `.env.example` file contains safe empty placeholders.
 ## Running Tests
 
 ```bash
-pytest tests/
+python -m pytest tests/
 ```
 
 The upload pipeline tests mock all Anthropic API calls -- no API key is required to run the test suite.

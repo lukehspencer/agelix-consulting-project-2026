@@ -11,7 +11,6 @@ import RULExplanation from './RULExplanation'
 import DataUpload from './DataUpload'
 import UploadPanel from './UploadPanel'
 import DynamicAssetTable from './DynamicAssetTable'
-import DynamicAHPMatrix from './DynamicAHPMatrix'
 import { useRiskScores } from '../hooks/useRiskScores'
 import { useRUL } from '../hooks/useRUL'
 import useUpload from '../hooks/useUpload'
@@ -47,7 +46,7 @@ function buildSensorContext(asset, criteriaConfig) {
 export default function Dashboard() {
   const [mode, setMode] = useState('default')
 
-  // --- Existing Phase 1+2 state (unchanged) ---
+  // --- Default fleet state ---
   const [ahpResult, setAhpResult] = useState(null)
   const [history, setHistory] = useState([])
   const pendingLogRef = useRef(null)
@@ -251,33 +250,37 @@ export default function Dashboard() {
   const highestRisk = assets.length ? assets[0] : null
   const highRiskCount = assets.filter(a => a.risk_factor > 7).length
 
-  // --- Uploaded mode state ---
-  const [uploadedPredictedAssets, setUploadedPredictedAssets] = useState([])
-  const [uploadedCriteriaConfig, setUploadedCriteriaConfig] = useState(null)
+  // --- Uploaded mode: single useUpload instance owned by Dashboard ---
+  const {
+    uploadStatus, criteriaConfig, trainingResult,
+    uploadedAssets, predictedAssets, modelPath, errorMessage, isPredicting,
+    uploadAndAnalyze, predictAll, resetUpload, explainAsset,
+  } = useUpload()
+
   const [uploadedExplanations, setUploadedExplanations] = useState({})
   const [uploadedAhpResult, setUploadedAhpResult] = useState(null)
 
-  const { explainAsset } = useUpload()
-
-  const handleAssetsReady = useCallback((assetsData, config) => {
-    setUploadedPredictedAssets(assetsData)
-    setUploadedCriteriaConfig(config)
-    setUploadedExplanations({})
-  }, [])
+  useEffect(() => {
+    console.log('[Dashboard] predictedAssets updated, count =', predictedAssets.length,
+      '| first risk_factor =', predictedAssets[0]?.risk_factor)
+    if (predictedAssets.length > 0) {
+      setUploadedExplanations({})
+    }
+  }, [predictedAssets])
 
   const handleDynamicExplain = useCallback(async (asset) => {
-    if (!uploadedCriteriaConfig) return
-    const sensorContext = buildSensorContext(asset, uploadedCriteriaConfig)
+    if (!criteriaConfig) return
+    const sensorContext = buildSensorContext(asset, criteriaConfig)
 
     const explanation = await explainAsset({
       ...asset,
-      asset_type: uploadedCriteriaConfig.asset_type,
-      failure_modes: uploadedCriteriaConfig.failure_modes,
+      asset_type: criteriaConfig.asset_type,
+      failure_modes: criteriaConfig.failure_modes,
       sensor_context: sensorContext,
     })
 
     setUploadedExplanations(prev => ({ ...prev, [asset.asset_id]: explanation }))
-  }, [uploadedCriteriaConfig, explainAsset])
+  }, [criteriaConfig, explainAsset])
 
   const ahpValid = ahpResult?.valid ?? false
 
@@ -431,24 +434,32 @@ export default function Dashboard() {
 
       {mode === 'uploaded' && (
         <>
+          {criteriaConfig && (
+            <AHPMatrix
+              criteriaNames={criteriaConfig.criteria.map(c => c.name)}
+              onWeightsUpdate={setUploadedAhpResult}
+            />
+          )}
+
           <UploadPanel
-            onAssetsReady={handleAssetsReady}
+            uploadStatus={uploadStatus}
+            criteriaConfig={criteriaConfig}
+            trainingResult={trainingResult}
+            errorMessage={errorMessage}
+            isPredicting={isPredicting}
+            hasPredictions={predictedAssets.length > 0}
+            onAnalyze={uploadAndAnalyze}
+            onPredict={predictAll}
+            onReset={resetUpload}
             ahpValid={uploadedAhpResult?.valid ?? false}
             ahpWeights={uploadedAhpResult?.weights ?? null}
             ahpCr={uploadedAhpResult?.cr ?? null}
           />
 
-          {uploadedCriteriaConfig && (
-            <DynamicAHPMatrix
-              criteriaNames={uploadedCriteriaConfig.criteria.map(c => c.name)}
-              onWeightsUpdate={setUploadedAhpResult}
-            />
-          )}
-
-          {uploadedPredictedAssets.length > 0 && (
+          {predictedAssets.length > 0 && (
             <DynamicAssetTable
-              assets={uploadedPredictedAssets}
-              criteriaConfig={uploadedCriteriaConfig}
+              assets={predictedAssets}
+              criteriaConfig={criteriaConfig}
               onExplain={handleDynamicExplain}
               explanations={uploadedExplanations}
             />

@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAHP } from '../hooks/useAHP'
 
-const CRITERIA = [
+const DEFAULT_CRITERIA = [
   'Criticality',
   'Condition',
   'Failure Prob.',
@@ -9,15 +9,13 @@ const CRITERIA = [
   'Cost Trend',
 ]
 
-const CRITERIA_FULL = [
+const DEFAULT_CRITERIA_FULL = [
   'Criticality',
   'Condition',
   'Failure Probability',
   'Downtime Impact',
   'Maintenance Cost Trend',
 ]
-
-const N = 5
 
 // Full Saaty scale: integers 1–9 and their reciprocals.
 // Values are stored as exact floats; labels are display-only.
@@ -41,8 +39,8 @@ const SAATY_OPTIONS = [
   { label: '1/9  Extreme⁻¹',     value: 1 / 9   },
 ]
 
-function initMatrix() {
-  return Array.from({ length: N }, () => Array(N).fill(1))
+function makeInitMatrix(n) {
+  return Array.from({ length: n }, () => Array(n).fill(1))
 }
 
 // Format a float for the read-only reciprocal cells.
@@ -52,9 +50,17 @@ function fmtReciprocal(val) {
   return `1/${Math.round(1 / val)}`
 }
 
-export default function AHPMatrix({ onWeightsUpdate }) {
-  const [matrix, setMatrix] = useState(initMatrix)
+export default function AHPMatrix({ onWeightsUpdate, criteriaNames }) {
+  const N = criteriaNames?.length ?? DEFAULT_CRITERIA.length
+  const CRITERIA = criteriaNames ?? DEFAULT_CRITERIA
+  const CRITERIA_FULL = criteriaNames ?? DEFAULT_CRITERIA_FULL
+
+  const [matrix, setMatrix] = useState(() => makeInitMatrix(N))
   const { calculateWeights, result, loading, error } = useAHP()
+
+  useEffect(() => {
+    setMatrix(makeInitMatrix(N))
+  }, [N])
 
   function handleChange(i, j, raw) {
     const val = parseFloat(raw)
@@ -155,6 +161,7 @@ export default function AHPMatrix({ onWeightsUpdate }) {
             weights={result.weights}
             lambdaMax={result.lambda_max}
             ci={result.ci}
+            criteriaFull={CRITERIA_FULL}
           />
         </div>
       )}
@@ -188,7 +195,7 @@ function CRBanner({ cr, valid }) {
 
 // ── Weights Panel ─────────────────────────────────────────────────────────────
 
-function WeightsPanel({ weights, lambdaMax, ci }) {
+function WeightsPanel({ weights, lambdaMax, ci, criteriaFull }) {
   const maxW = Math.max(...weights)
 
   return (
@@ -205,7 +212,7 @@ function WeightsPanel({ weights, lambdaMax, ci }) {
         <tbody>
           {weights.map((w, i) => (
             <tr key={i}>
-              <td>{CRITERIA_FULL[i]}</td>
+              <td>{criteriaFull[i]}</td>
               <td className="w-value">{(w * 100).toFixed(2)}%</td>
               <td className="w-bar-cell">
                 <div className="w-bar-track">
