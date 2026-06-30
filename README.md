@@ -133,7 +133,7 @@ The user fills a 5x5 pairwise comparison matrix in the dashboard, following Saat
 
 Each asset is scored against 5 criteria (C1-C5) on a 1-10 internal scale, converted to the 1-9 Saaty scale. The overall risk factor is the dot product of the weight vector and score vector, producing a score from 1 to 9 per asset. Higher scores indicate higher risk.
 
-In the default fleet mode, three criteria (Condition, Failure Probability, Maintenance Cost Trend) are derived automatically from sensor telemetry. Two criteria (Criticality, Downtime Impact) are manual inputs with defaults based on the KSB Calio operational context.
+In the default fleet mode, three criteria are derived automatically from sensor telemetry and two are manual inputs with defaults based on the KSB Calio operational context. In upload mode, no criteria are hardcoded -- the Anthropic API analyzes the uploaded data, infers appropriate criteria names and scoring thresholds for the detected asset type, and stores them in a CriteriaConfig that drives the entire scoring pipeline.
 
 ### RUL Prediction
 

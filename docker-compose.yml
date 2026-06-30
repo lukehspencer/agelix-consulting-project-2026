@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./rul/model.pkl:/app/rul/model.pkl
+      - ./rul/dynamic_model.pkl:/app/rul/dynamic_model.pkl
+      - ./rag/chroma_db:/app/rag/chroma_db
+      - ./docs:/app/docs

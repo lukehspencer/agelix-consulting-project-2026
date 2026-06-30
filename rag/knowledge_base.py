@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import chromadb
-from sentence_transformers import SentenceTransformer
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 
 from rag.document_loader import load_all_documents
 
@@ -12,13 +12,7 @@ _COLLECTION_NAME = "asset_knowledge"
 
 
 def _get_embedding_fn():
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-
-    class _EmbeddingFunction(chromadb.EmbeddingFunction):
-        def __call__(self, input: list[str]) -> list[list[float]]:
-            return model.encode(input, show_progress_bar=False).tolist()
-
-    return _EmbeddingFunction()
+    return DefaultEmbeddingFunction()
 
 
 def build_knowledge_base(force_rebuild: bool = False) -> int:
