@@ -121,7 +121,7 @@ To run node.js on Windows:
 & "C:\Program Files\nodejs\npm.cmd"
 To set npm in env: $env:PATH += ";C\Program Files\nodejs\"
 
-Runs at `http://localhost:5173`. Vite proxies `/ahp/*`, `/rul/*`, and `/upload/*` to the backend automatically.
+Runs at `http://localhost:5173`. Vite proxies `/ahp/*`, `/rul/*`, `/upload/*`, and `/rag/*` to the backend automatically.
 
 ---
 
@@ -175,6 +175,8 @@ The retriever makes targeted queries per use case:
 
 The knowledge base grows automatically as assets are uploaded -- each upload stores its CriteriaConfig and generates a failure case document. To bootstrap with existing domain knowledge, place PDFs and markdown files in the appropriate directories and run `python -m rag.ingest`.
 
+OEM PDF manuals can also be uploaded directly from the dashboard UI. In upload mode, a collapsible **RAG Knowledge Base** panel appears below the Upload panel. It shows all three document categories (manuals, failure cases, criteria configs), allows drag-and-drop or click-to-browse PDF upload, and provides per-manual delete buttons. Uploaded manuals are immediately ingested into the vector store.
+
 ---
 
 ## API Reference
@@ -206,6 +208,16 @@ GET `/ahp/assets` accepts query params: `weights` (repeated float), `c1_score` (
 | POST | `/upload/analyze` | Upload Excel -> infer criteria, train model, score assets |
 | POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets |
 | POST | `/upload/explain` | Asset + AHP + RUL + asset type -> Claude explanation |
+
+### `/rag` -- RAG Knowledge Base Management
+
+| Method | Route | Description |
+|---|---|---|
+| POST | `/rag/upload-document` | Upload a PDF manual, save to `docs/manuals/`, ingest into vector store |
+| GET | `/rag/documents` | List all ingested documents across manuals, failure cases, and criteria configs |
+| DELETE | `/rag/document` | Delete a document by filename and type, rebuild the vector store |
+
+`DELETE /rag/document` accepts a JSON body: `{"filename": str, "doc_type": "manual"|"failure_case"|"criteria_config"}`.
 
 Full request/response schemas are available at `http://localhost:8000/docs` when the backend is running.
 
@@ -295,14 +307,15 @@ agelix-consulting-project-2026/
 |   +-- knowledge_base.py          # ChromaDB vector store (SentenceTransformer embeddings)
 |   +-- retriever.py               # RAG retrieval entry point for all use cases
 |   +-- ingest.py                  # CLI: python -m rag.ingest [--rebuild]
+|   +-- api.py                     # /rag/* endpoints (upload, list, delete documents)
 |   +-- stored_configs/            # Saved CriteriaConfig JSON files (auto-populated)
 |   +-- chroma_db/                 # ChromaDB persistent store (auto-generated)
 +-- docs/
-|   +-- manuals/                   # PDF manuals for RAG ingestion
+|   +-- manuals/                   # PDF manuals for RAG ingestion (uploadable via UI)
 |   +-- failure_cases/             # Auto-generated + manual failure case markdown
 +-- frontend/src/
-|   +-- components/                # React components
-|   +-- hooks/                     # useAHP, useRUL, useUpload
+|   +-- components/                # React components (incl. KnowledgeBasePanel)
+|   +-- hooks/                     # useAHP, useRUL, useUpload, useKnowledgeBase
 +-- tests/
 ```
 

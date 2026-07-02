@@ -56,7 +56,7 @@ RAG Knowledge Pipeline:
 ```
 agelix-consulting-project-2026/
 |
-+-- main.py                                # FastAPI entry point (mounts ahp + rul + upload routers)
++-- main.py                                # FastAPI entry point (mounts ahp + rul + upload + rag routers)
 +-- CLAUDE.md
 +-- README.md
 +-- .env                                   # never commit
@@ -113,6 +113,7 @@ agelix-consulting-project-2026/
 |   +-- knowledge_base.py                  # ChromaDB vector store management
 |   +-- retriever.py                       # RAG retrieval entry point for all use cases
 |   +-- ingest.py                          # CLI: python -m rag.ingest [--rebuild]
+|   +-- api.py                             # /rag/* endpoints (upload, list, delete documents)
 |   +-- chroma_db/                         # ChromaDB persistent store (gitignored)
 |   +-- stored_configs/                    # saved CriteriaConfig JSON files
 |
@@ -132,12 +133,14 @@ agelix-consulting-project-2026/
 |       |   +-- RULDisplay.jsx
 |       |   +-- RULExplanation.jsx
 |       |   +-- UploadPanel.jsx            # file drop zone + AI criteria preview
+|       |   +-- KnowledgeBasePanel.jsx     # collapsible RAG document manager (uploaded mode)
 |       |   +-- DynamicAssetTable.jsx      # dynamic risk ranking + RUL table
 |       +-- hooks/
 |       |   +-- useAHP.js
 |       |   +-- useRiskScores.js
 |       |   +-- useRUL.js
 |       |   +-- useUpload.js              # upload flow state management
+|       |   +-- useKnowledgeBase.js       # RAG document list + upload/delete state
 |       +-- utils/
 |           +-- dateUtils.js
 |           +-- dataParser.js
@@ -894,6 +897,26 @@ POST /upload/explain body:
  "sensor_context": {"Vibration_Score": 2.3, "Winding_Temp_C": 85.0}}
 ```
 
+### RAG Router (`rag/api.py`) -- mounted at /rag
+
+| Method | Route | Description |
+|---|---|---|
+| POST | `/rag/upload-document` | Multipart PDF upload -> save to docs/manuals/, ingest into ChromaDB |
+| GET  | `/rag/documents` | List all ingested documents (manuals, failure_cases, criteria_configs) |
+| DELETE | `/rag/document` | Delete a document by filename + type, rebuild knowledge base |
+
+GET /rag/documents response:
+```json
+{"manuals": ["ksb_manual.pdf"], "failure_cases": ["pump_20260630.md"], "criteria_configs": ["ksb_calio.json"]}
+```
+
+DELETE /rag/document body:
+```json
+{"filename": "ksb_manual.pdf", "doc_type": "manual"}
+```
+`doc_type` must be one of `"manual"`, `"failure_case"`, `"criteria_config"`.
+Delete triggers `build_knowledge_base(force_rebuild=True)` to purge stale embeddings.
+
 ---
 
 ## Frontend Architecture
@@ -938,6 +961,13 @@ When predict-all runs (uploaded mode):
 When explain requested (uploaded mode):
   uploadedExplanations updated for that asset_id with sensor_context from CriteriaConfig
 
+### Uploaded Mode Layout (top to bottom)
+
+1. AHPMatrix (only rendered after criteriaConfig is available)
+2. UploadPanel (file drop zone + AI criteria preview + predict button)
+3. KnowledgeBasePanel (collapsible; shows manuals/failure cases/configs; PDF upload)
+4. DynamicAssetTable (only rendered when predictedAssets.length > 0)
+
 ### Component Inventory
 
 | Component | File | Mode | Purpose |
@@ -953,6 +983,7 @@ When explain requested (uploaded mode):
 | RULDisplay | RULDisplay.jsx | default | RUL progress bars in months + CI |
 | RULExplanation | RULExplanation.jsx | default | Claude explanation cards per pump |
 | UploadPanel | UploadPanel.jsx | uploaded | File drop zone + AI criteria preview |
+| KnowledgeBasePanel | KnowledgeBasePanel.jsx | uploaded | Collapsible RAG document manager: PDF upload, list, delete; uses useKnowledgeBase internally |
 | DynamicAssetTable | DynamicAssetTable.jsx | uploaded | Dynamic risk ranking + RUL table |
 
 ### Hook Inventory
@@ -963,6 +994,7 @@ When explain requested (uploaded mode):
 | useRiskScores | useRiskScores.js | GET /ahp/assets with current weights |
 | useRUL | useRUL.js | Auto-predict + on-demand explain (default fleet) |
 | useUpload | useUpload.js | Upload flow state (uploaded mode) |
+| useKnowledgeBase | useKnowledgeBase.js | RAG document lists, upload/delete status; owned by KnowledgeBasePanel |
 
 ### Data Upload Schema (dataParser.js)
 
