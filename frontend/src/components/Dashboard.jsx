@@ -10,6 +10,7 @@ import RULDisplay from './RULDisplay'
 import RULExplanation from './RULExplanation'
 import DataUpload from './DataUpload'
 import UploadPanel from './UploadPanel'
+import KnowledgeBasePanel from './KnowledgeBasePanel'
 import DynamicAssetTable from './DynamicAssetTable'
 import { useRiskScores } from '../hooks/useRiskScores'
 import { useRUL } from '../hooks/useRUL'
@@ -455,6 +456,8 @@ export default function Dashboard() {
             ahpWeights={uploadedAhpResult?.weights ?? null}
             ahpCr={uploadedAhpResult?.cr ?? null}
           />
+
+          <KnowledgeBasePanel />
 
           {predictedAssets.length > 0 && (
             <DynamicAssetTable

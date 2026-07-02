@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ahp.api import app
 from rul.api import router as rul_router
 from upload.api import router as upload_router
+from rag.api import router as rag_router
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,3 +15,4 @@ app.add_middleware(
 
 app.include_router(rul_router)
 app.include_router(upload_router)
+app.include_router(rag_router)
