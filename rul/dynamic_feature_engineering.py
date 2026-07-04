@@ -1,3 +1,4 @@
+import itertools
 import logging
 import math
 
@@ -5,6 +6,10 @@ from ahp.criteria_scoring import convert_to_saaty
 from data.column_resolver import get_sensor_columns, resolve_sensor
 
 logger = logging.getLogger(__name__)
+
+
+def _sorted_sensor_pairs(criteria_config: dict) -> list[tuple[str, str]]:
+    return list(itertools.combinations(sorted(get_sensor_columns(criteria_config)), 2))
 
 
 def _safe_float(value, feature_name: str) -> float:
@@ -45,13 +50,35 @@ def get_dynamic_feature_names(criteria_config: dict) -> list[str]:
         names.append(f"rolling_{col}_mean")
         names.append(f"rolling_{col}_std")
 
+    for col in get_sensor_columns(criteria_config):
+        names.append(f"trend_{col}")
+
+    pairs = _sorted_sensor_pairs(criteria_config)
+
+    for col_a, col_b in pairs:
+        names.append(f"interaction_{col_a}_{col_b}")
+
+    for col_a, col_b in pairs:
+        names.append(f"alignment_{col_a}_{col_b}")
+
+    for col_a, col_b in pairs:
+        names.append(f"corr_{col_a}_{col_b}")
+
+    names.append("composite_stress_index")
+
+    names.append("breach_count")
+    names.append("high_severity_count")
+    names.append("medium_severity_count")
+    names.append("max_exceeded_pct")
+
     return names
 
 
 def build_dynamic_feature_vector(asset_snapshot: dict,
                                   criteria_config: dict,
                                   weights: list,
-                                  scores_raw: dict) -> list:
+                                  scores_raw: dict,
+                                  breaches: list = None) -> list:
     n = _n_criteria(criteria_config)
     vector = []
 
@@ -93,5 +120,44 @@ def build_dynamic_feature_vector(asset_snapshot: dict,
 
         vector.append(_safe_float(mean_val, mean_key))
         vector.append(_safe_float(std_val, std_key))
+
+    for col in get_sensor_columns(criteria_config):
+        key = f"trend_{col}"
+        val = resolve_sensor(asset_snapshot, key, default=None)
+        if val is None:
+            logger.warning("Feature '%s': missing in snapshot, using 0.0", key)
+            val = 0.0
+        vector.append(_safe_float(val, key))
+
+    pairs = _sorted_sensor_pairs(criteria_config)
+
+    for prefix in ("interaction", "alignment", "corr"):
+        for col_a, col_b in pairs:
+            key = f"{prefix}_{col_a}_{col_b}"
+            val = resolve_sensor(asset_snapshot, key, default=None)
+            if val is None:
+                logger.warning("Feature '%s': missing in snapshot, using 0.0", key)
+                val = 0.0
+            vector.append(_safe_float(val, key))
+
+    stress_val = resolve_sensor(asset_snapshot, "composite_stress_index", default=None)
+    if stress_val is None:
+        logger.warning("Feature 'composite_stress_index': missing in snapshot, using 0.0")
+        stress_val = 0.0
+    vector.append(_safe_float(stress_val, "composite_stress_index"))
+
+    if breaches:
+        high_count = sum(1 for b in breaches if b.get("severity") == "high")
+        medium_count = sum(1 for b in breaches if b.get("severity") == "medium")
+        breach_count = len(breaches)
+        max_pct = max((b.get("exceeded_pct", 0.0) for b in breaches), default=0.0)
+    else:
+        high_count = medium_count = breach_count = 0
+        max_pct = 0.0
+
+    vector.append(_safe_float(breach_count, "breach_count"))
+    vector.append(_safe_float(high_count, "high_severity_count"))
+    vector.append(_safe_float(medium_count, "medium_severity_count"))
+    vector.append(_safe_float(max_pct, "max_exceeded_pct"))
 
     return vector

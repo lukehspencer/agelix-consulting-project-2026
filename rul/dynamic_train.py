@@ -9,7 +9,9 @@ from xgboost import XGBRegressor
 import joblib
 
 from ahp.dynamic_criteria_scorer import score_asset_dynamic
+from ahp.threshold_breach_detector import detect_breaches
 from data.column_resolver import get_sensor_columns, is_failure_event
+from data.dynamic_aggregator import compute_correlation_features
 from rul.dynamic_feature_engineering import (
     build_dynamic_feature_vector,
     get_dynamic_feature_names,
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 def _equal_weights(n):
     return [1.0 / n] * n
 _ROLLING_WINDOW = 7
+_TREND_WINDOW = 14
 
 
 def train_dynamic_model(file_path: str,
@@ -111,6 +114,9 @@ def train_dynamic_model(file_path: str,
                 snapshot[f"rolling_{col}_mean"] = float(row_dict.get(f"rolling_{col}_mean", 0))
                 snapshot[f"rolling_{col}_std"] = float(row_dict.get(f"rolling_{col}_std", 0))
 
+            trend_window = asset_tel.iloc[max(0, i - _TREND_WINDOW + 1):i + 1]
+            snapshot.update(compute_correlation_features(trend_window, sensor_cols))
+
             failures_90 = 0
             days_since = 999
             total_failures = 0
@@ -139,9 +145,12 @@ def train_dynamic_model(file_path: str,
             scores_result = score_asset_dynamic(snapshot, criteria_config, manual_scores)
             raw_scores = scores_result["raw_scores"]
 
+            row_breaches = detect_breaches(snapshot, criteria_config)
+
             vec = build_dynamic_feature_vector(
                 snapshot, criteria_config,
                 _equal_weights(len(criteria_config.get("criteria", []))), raw_scores,
+                row_breaches,
             )
 
             X_rows.append(vec)
@@ -197,6 +206,7 @@ def train_dynamic_model(file_path: str,
         "feature_names": feature_names,
         "criteria_config": criteria_config,
         "schema_summary": schema_summary,
+        "approved": False,
     }
 
     out_path = Path(model_output_path)

@@ -1,8 +1,64 @@
+import itertools
 from datetime import timedelta
 
 import pandas as pd
 
 from data.column_resolver import resolve, is_failure_event
+
+_TREND_WINDOW = 14
+
+
+def compute_correlation_features(window: pd.DataFrame, sensor_cols: list[str]) -> dict:
+    """Trend, pairwise interaction/alignment/correlation, and composite stress
+    features for a single asset over its trailing `window` (<= _TREND_WINDOW rows).
+    Shared by dynamic_aggregator.py (snapshot) and dynamic_train.py (per training row)
+    so training and inference compute identical features.
+    """
+    features = {}
+    trends = {}
+    window_means = {}
+    present = set()
+    n = len(window)
+
+    for col in sensor_cols:
+        if col not in window.columns or n == 0:
+            continue
+        present.add(col)
+        last_val = float(window[col].iloc[-1])
+        first_val = float(window[col].iloc[0])
+        divisor = _TREND_WINDOW if n >= _TREND_WINDOW else n
+        slope = (last_val - first_val) / divisor if divisor else 0.0
+        trends[col] = slope
+        window_means[col] = float(window[col].mean())
+        features[f"trend_{col}"] = round(slope, 6)
+
+    for col_a, col_b in itertools.combinations(sorted(sensor_cols), 2):
+        if col_a not in present or col_b not in present:
+            continue
+
+        features[f"interaction_{col_a}_{col_b}"] = round(
+            window_means[col_a] * window_means[col_b], 6
+        )
+        features[f"alignment_{col_a}_{col_b}"] = round(
+            trends[col_a] * trends[col_b], 6
+        )
+
+        corr = 0.0
+        if n >= 2:
+            try:
+                c = window[col_a].corr(window[col_b])
+                if pd.notna(c):
+                    corr = float(c)
+            except Exception:
+                corr = 0.0
+        features[f"corr_{col_a}_{col_b}"] = round(corr, 6)
+
+    positive_trends = [t for t in trends.values() if t > 0]
+    features["composite_stress_index"] = (
+        round(sum(positive_trends) / len(positive_trends), 6) if positive_trends else 0.0
+    )
+
+    return features
 
 
 def aggregate_uploaded_data(file_path: str,
@@ -60,6 +116,9 @@ def aggregate_uploaded_data(file_path: str,
         snapshot_date = snapshot[date_col]
         snapshot_dict = snapshot.to_dict()
 
+        trend_window = asset_tel.iloc[max(0, snapshot_idx - _TREND_WINDOW + 1):snapshot_idx + 1]
+        correlation_features = compute_correlation_features(trend_window, sensor_cols)
+
         snapshot_out = {
             "asset_id": str(asset_id),
             "snapshot_date": str(snapshot_date.date()) if hasattr(snapshot_date, 'date') else str(snapshot_date),
@@ -75,6 +134,8 @@ def aggregate_uploaded_data(file_path: str,
             std_key = f"rolling_{col}_std"
             snapshot_out[mean_key] = round(float(snapshot_dict.get(mean_key, 0)), 4)
             snapshot_out[std_key] = round(float(snapshot_dict.get(std_key, 0)), 4)
+
+        snapshot_out.update(correlation_features)
 
         failures_90 = 0
         days_since = 999

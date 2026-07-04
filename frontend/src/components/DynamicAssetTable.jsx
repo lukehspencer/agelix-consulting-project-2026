@@ -12,6 +12,45 @@ function rulDaysColor(days) {
   return 'dyn-green'
 }
 
+function stressColor(val) {
+  if (val > 0.5) return 'dyn-red'
+  if (val >= 0.2) return 'dyn-yellow'
+  return 'dyn-green'
+}
+
+function formatSensorName(col) {
+  return col.replace(/_/g, ' ')
+}
+
+function pairDescription(pair) {
+  const abs = Math.abs(pair.correlation ?? 0)
+  const strength = abs > 0.6 ? 'strongly ' : abs > 0.3 ? 'moderately ' : ''
+  const relation = pair.direction === 'co-degrading' ? 'co-degrading' : 'inversely correlated'
+  return `${formatSensorName(pair.col_a)} x ${formatSensorName(pair.col_b)}: ${strength}${relation}`
+}
+
+function breachStatus(asset) {
+  const summary = asset.breach_summary
+  const count = summary?.total_breaches ?? 0
+
+  if (!summary || count === 0) {
+    return { label: '✓ All Clear', className: 'breach-clear' }
+  }
+  if (summary.high_severity > 0) {
+    return { label: `🚨 Immediate (${count})`, className: 'breach-high' }
+  }
+  if (summary.medium_severity > 0) {
+    return { label: `⚠ Schedule (${count})`, className: 'breach-medium' }
+  }
+  return { label: `⚠ Monitor (${count})`, className: 'breach-low' }
+}
+
+function severityBadgeClass(severity) {
+  if (severity === 'high') return 'breach-high'
+  if (severity === 'medium') return 'breach-medium'
+  return 'breach-low'
+}
+
 function topCriterion(asset, criteria) {
   if (!criteria?.length || !asset.scores) return null
   let best = null
@@ -23,10 +62,16 @@ function topCriterion(asset, criteria) {
   return best
 }
 
-export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, explanations }) {
+export default function DynamicAssetTable({
+  assets, criteriaConfig, onExplain, explanations, onExplainBreach, breachAlerts,
+}) {
   const [activeId, setActiveId] = useState(null)
   const [loadingId, setLoadingId] = useState(null)
   const popupRef = useRef(null)
+
+  const [activeBreachId, setActiveBreachId] = useState(null)
+  const [loadingBreachId, setLoadingBreachId] = useState(null)
+  const breachPopupRef = useRef(null)
 
   console.log('[DynamicAssetTable] render: assets.length =', assets?.length ?? 0)
 
@@ -38,6 +83,12 @@ export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, e
   const activeAsset = sorted.find(a => a.asset_id === activeId) ?? null
   const activeExplanation = activeId ? explanations?.[activeId] ?? null : null
   const isLoading = loadingId != null
+
+  const activeBreachAsset = sorted.find(a => a.asset_id === activeBreachId) ?? null
+  const activeBreachAlerts = activeBreachId ? breachAlerts?.[activeBreachId] ?? null : null
+  const isBreachLoading = loadingBreachId != null
+
+  const highSeverityAssets = sorted.filter(a => (a.breach_summary?.high_severity ?? 0) > 0)
 
   async function handleExplain(asset) {
     setActiveId(asset.asset_id)
@@ -58,8 +109,33 @@ export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, e
     }
   }
 
+  async function handleExplainBreach(asset) {
+    setActiveBreachId(asset.asset_id)
+    if (!breachAlerts?.[asset.asset_id]) {
+      setLoadingBreachId(asset.asset_id)
+      await onExplainBreach(asset)
+      setLoadingBreachId(null)
+    }
+  }
+
+  function handleCloseBreach() {
+    setActiveBreachId(null)
+  }
+
+  function handleBreachBackdropClick(e) {
+    if (breachPopupRef.current && !breachPopupRef.current.contains(e.target)) {
+      handleCloseBreach()
+    }
+  }
+
   return (
     <section className="card dyn-table-section">
+      {highSeverityAssets.length > 0 && (
+        <div className="high-severity-banner">
+          🚨 {highSeverityAssets.length} asset{highSeverityAssets.length !== 1 ? 's' : ''} require immediate attention: {highSeverityAssets.map(a => a.asset_id).join(', ')}
+        </div>
+      )}
+
       {assets && assets.length > 0 && criteriaConfig.failure_modes && (
         <div className="failure-modes-strip">
           Identified Failure Modes: {criteriaConfig.failure_modes.join(' . ')}
@@ -82,8 +158,10 @@ export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, e
                 </th>
               ))}
               <th className="th-score">Risk Factor</th>
+              <th className="th-score">Breach Status</th>
               <th className="th-score">RUL (days)</th>
               <th className="th-score">CI</th>
+              <th></th>
               <th></th>
             </tr>
           </thead>
@@ -94,9 +172,13 @@ export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, e
               const ciHighDays = asset.ci_high != null ? Math.round(asset.ci_high * 365) : null
               const isActive = activeId === asset.asset_id
               const isRowLoading = loadingId === asset.asset_id
+              const isBreachActive = activeBreachId === asset.asset_id
+              const isBreachRowLoading = loadingBreachId === asset.asset_id
+              const status = breachStatus(asset)
+              const alertRequired = asset.breach_summary?.alert_required ?? false
 
               return (
-                <tr key={asset.asset_id} className={isActive ? 'row-expanded' : ''}>
+                <tr key={asset.asset_id} className={isActive || isBreachActive ? 'row-expanded' : ''}>
                   <td className="td-id">{asset.asset_id}</td>
                   {criteria.map(c => {
                     const val = asset.scores?.[c.id]
@@ -112,6 +194,9 @@ export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, e
                         {asset.risk_factor.toFixed(2)}
                       </span>
                     ) : '-'}
+                  </td>
+                  <td className="td-score">
+                    <span className={`breach-pill ${status.className}`}>{status.label}</span>
                   </td>
                   <td className="td-score">
                     {rulDays != null ? (
@@ -130,6 +215,16 @@ export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, e
                       disabled={isRowLoading}
                     >
                       {isRowLoading ? 'Loading...' : isActive ? 'Hide' : explanations?.[asset.asset_id] ? 'View' : 'Explain'}
+                    </button>
+                  </td>
+                  <td>
+                    <button
+                      className="btn-breach-alerts"
+                      onClick={() => handleExplainBreach(asset)}
+                      disabled={isBreachRowLoading || !alertRequired}
+                      title={!alertRequired ? 'No significant breaches detected' : undefined}
+                    >
+                      {isBreachRowLoading ? 'Loading...' : isBreachActive ? 'Hide' : 'Breach Alerts'}
                     </button>
                   </td>
                 </tr>
@@ -159,6 +254,12 @@ export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, e
             {/* Divider */}
             <div className="explain-popup-divider" />
 
+            {/* Multi-Sensor Analysis */}
+            <MultiSensorAnalysis correlationSummary={activeAsset.correlation_summary} />
+
+            {/* Divider */}
+            <div className="explain-popup-divider" />
+
             {/* Explanation body */}
             <div className="explain-popup-body">
               {isLoading && (
@@ -176,7 +277,101 @@ export default function DynamicAssetTable({ assets, criteriaConfig, onExplain, e
           </div>
         </div>
       )}
+
+      {activeBreachId && activeBreachAsset && (
+        <div className="explain-backdrop" onClick={handleBreachBackdropClick}>
+          <div className="explain-popup" ref={breachPopupRef}>
+            <div className="explain-popup-header">
+              <div>
+                <span className="explain-popup-asset-id">
+                  ⚠ Threshold Breach Alerts — {activeBreachAsset.asset_id}
+                </span>
+              </div>
+              <button className="explain-popup-close" onClick={handleCloseBreach} aria-label="Close">
+                &times;
+              </button>
+            </div>
+
+            <div className="explain-popup-body">
+              {isBreachLoading && (
+                <p className="explanation-spinner">Generating breach alerts...</p>
+              )}
+              {!isBreachLoading && !activeBreachAlerts && (
+                <p className="explanation-placeholder">Fetching breach alerts...</p>
+              )}
+              {!isBreachLoading && activeBreachAlerts && activeBreachAlerts.length === 0 && (
+                <p className="explanation-placeholder">No high or medium severity breaches to report.</p>
+              )}
+              {!isBreachLoading && activeBreachAlerts && activeBreachAlerts.length > 0 && (
+                activeBreachAlerts.map((alert, idx) => {
+                  const breach = (activeBreachAsset.breaches ?? []).find(
+                    b => b.criterion_id === alert.criterion_id && b.column === alert.column
+                  )
+                  return (
+                    <div key={idx} className="breach-alert-entry">
+                      <div className="breach-alert-header">
+                        <span className={`breach-pill ${severityBadgeClass(alert.severity)}`}>
+                          {alert.severity}
+                        </span>
+                        <span className="breach-alert-criterion">
+                          {alert.criterion_name} — {formatSensorName(alert.column ?? '')}
+                        </span>
+                      </div>
+                      {breach && (
+                        <p className="breach-alert-metrics">
+                          Current: {breach.current_value} | Limit: {breach.threshold_max} | {(breach.exceeded_pct * 100).toFixed(0)}% over
+                        </p>
+                      )}
+                      <p className="explain-popup-text">{alert.alert_text}</p>
+                      {idx < activeBreachAlerts.length - 1 && <div className="explain-popup-divider" />}
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
+  )
+}
+
+function MultiSensorAnalysis({ correlationSummary }) {
+  if (!correlationSummary) return null
+
+  const stressIndex = correlationSummary.composite_stress_index ?? 0
+  const degradingTogether = correlationSummary.sensors_degrading_together ?? 0
+  const topPairs = (correlationSummary.top_correlated_pairs ?? []).slice(0, 2)
+
+  return (
+    <div className="multi-sensor-analysis">
+      <h4 className="multi-sensor-title">Multi-Sensor Analysis</h4>
+
+      <div className="stress-index-row">
+        <span className="stress-index-label">Composite Stress Index</span>
+        <div className="stress-index-bar-track">
+          <div
+            className={`stress-index-bar-fill ${stressColor(stressIndex)}`}
+            style={{ width: `${Math.min(100, Math.max(0, stressIndex * 100))}%` }}
+          />
+        </div>
+        <span className="stress-index-value">{stressIndex.toFixed(2)}</span>
+      </div>
+
+      {degradingTogether > 0 && (
+        <p className="degrading-together-note">
+          {degradingTogether} sensor pair{degradingTogether !== 1 ? 's' : ''} degrading together
+        </p>
+      )}
+
+      {topPairs.length > 0 && (
+        <ul className="correlated-pairs-list">
+          {topPairs.map((pair, idx) => (
+            <li key={idx}>{pairDescription(pair)}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }
 

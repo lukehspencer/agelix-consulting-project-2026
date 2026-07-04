@@ -1317,10 +1317,27 @@ body {
   min-width: 1.8rem;
 }
 
-.criteria-card-name {
+.criteria-name-input {
   font-weight: 700;
   font-size: 0.88rem;
   color: #1e293b;
+  border: 1px solid transparent;
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.4rem;
+  background: transparent;
+  flex: 1;
+  min-width: 8rem;
+}
+
+.criteria-name-input:hover:not(:disabled),
+.criteria-name-input:focus:not(:disabled) {
+  border-color: #cbd5e1;
+  background: #fff;
+}
+
+.criteria-name-input:disabled {
+  color: #1e293b;
+  cursor: default;
 }
 
 .criteria-badge {
@@ -1346,17 +1363,159 @@ body {
   margin-bottom: 0.35rem;
 }
 
-.criteria-manual-input {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.82rem;
-  color: #475569;
+.criteria-review-card {
+  background: #fafafa;
 }
 
-.criteria-threshold-range {
+.criteria-manual-review {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: #475569;
+  max-width: 20rem;
+}
+
+.default-score-slider {
+  width: 100%;
+}
+
+.ui-label-input {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.375rem;
+  font-size: 0.82rem;
+}
+
+.threshold-editor {
+  margin-top: 0.5rem;
+}
+
+.threshold-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+
+.threshold-table th {
+  text-align: left;
+  font-weight: 600;
+  color: #64748b;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.threshold-table td {
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.threshold-input {
+  width: 5.5rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.3rem;
+  font-size: 0.8rem;
+}
+
+.threshold-catchall {
   font-size: 0.78rem;
+  font-style: italic;
   color: #94a3b8;
+}
+
+.btn-delete-row {
+  background: none;
+  border: none;
+  color: #ef4444;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+}
+
+.btn-delete-row:disabled {
+  color: #cbd5e1;
+  cursor: not-allowed;
+}
+
+.btn-add-threshold {
+  padding: 0.3rem 0.7rem;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.375rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-add-threshold:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.penalty-editor {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.penalty-editor summary {
+  cursor: pointer;
+  color: #64748b;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.penalty-block {
+  margin-top: 0.5rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid #e2e8f0;
+}
+
+.penalty-column-name {
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 0.25rem;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.btn-approve {
+  padding: 0.5rem 1.2rem;
+  background: #16a34a;
+  color: #fff;
+  border: none;
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-approve:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.btn-approve:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.approval-confirmation {
+  padding: 0.5rem 0.75rem;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 0.375rem;
+  font-size: 0.82rem;
+  color: #15803d;
+  font-weight: 600;
+  margin-bottom: 1rem;
 }
 
 .failure-modes-strip {
@@ -1368,6 +1527,94 @@ body {
   color: #c2410c;
   font-weight: 500;
   margin-bottom: 1rem;
+}
+
+.high-severity-banner {
+  padding: 0.6rem 0.9rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
+  color: #b91c1c;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
+.breach-pill {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.breach-clear {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.breach-low {
+  background: #fef9c3;
+  color: #a16207;
+}
+
+.breach-medium {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.breach-high {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.btn-breach-alerts {
+  padding: 0.4rem 0.9rem;
+  background: #fff;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+  border-radius: 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.btn-breach-alerts:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.btn-breach-alerts:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  color: #94a3b8;
+  border-color: #e2e8f0;
+}
+
+.breach-alert-entry {
+  padding-bottom: 12px;
+}
+
+.breach-alert-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.breach-alert-criterion {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.breach-alert-metrics {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0 0 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Dynamic Asset Table ─────────────────────────────────────────────────── */
@@ -1511,6 +1758,70 @@ body {
   height: 1px;
   background: #e2e8f0;
   margin: 0 18px;
+}
+
+.multi-sensor-analysis {
+  padding: 12px 18px;
+}
+
+.multi-sensor-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin: 0 0 8px;
+}
+
+.stress-index-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stress-index-label {
+  font-size: 12px;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.stress-index-bar-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 9999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.stress-index-bar-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.2s ease;
+}
+
+.stress-index-value {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1e293b;
+  min-width: 2.4rem;
+  text-align: right;
+}
+
+.degrading-together-note {
+  font-size: 12px;
+  color: #b45309;
+  margin: 8px 0 0;
+}
+
+.correlated-pairs-list {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: #334155;
+}
+
+.correlated-pairs-list li {
+  margin-bottom: 2px;
 }
 
 .explain-popup-body {

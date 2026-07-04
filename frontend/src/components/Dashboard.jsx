@@ -255,10 +255,16 @@ export default function Dashboard() {
   const {
     uploadStatus, criteriaConfig, trainingResult,
     uploadedAssets, predictedAssets, modelPath, errorMessage, isPredicting,
-    uploadAndAnalyze, predictAll, resetUpload, explainAsset,
+    criteriaApproved, approvedCriteriaConfig, approvalChanges, approveCriteria,
+    uploadAndAnalyze, predictAll, resetUpload, explainAsset, explainBreach,
   } = useUpload()
 
+  // SME-approved config drives all downstream scoring/display once approval is complete;
+  // the raw draft is only used by UploadPanel's own review screen before that point.
+  const activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig
+
   const [uploadedExplanations, setUploadedExplanations] = useState({})
+  const [uploadedBreachAlerts, setUploadedBreachAlerts] = useState({})
   const [uploadedAhpResult, setUploadedAhpResult] = useState(null)
 
   useEffect(() => {
@@ -266,22 +272,29 @@ export default function Dashboard() {
       '| first risk_factor =', predictedAssets[0]?.risk_factor)
     if (predictedAssets.length > 0) {
       setUploadedExplanations({})
+      setUploadedBreachAlerts({})
     }
   }, [predictedAssets])
 
   const handleDynamicExplain = useCallback(async (asset) => {
-    if (!criteriaConfig) return
-    const sensorContext = buildSensorContext(asset, criteriaConfig)
+    if (!activeCriteriaConfig) return
+    const sensorContext = buildSensorContext(asset, activeCriteriaConfig)
 
     const explanation = await explainAsset({
       ...asset,
-      asset_type: criteriaConfig.asset_type,
-      failure_modes: criteriaConfig.failure_modes,
+      asset_type: activeCriteriaConfig.asset_type,
+      failure_modes: activeCriteriaConfig.failure_modes,
       sensor_context: sensorContext,
     })
 
     setUploadedExplanations(prev => ({ ...prev, [asset.asset_id]: explanation }))
-  }, [criteriaConfig, explainAsset])
+  }, [activeCriteriaConfig, explainAsset])
+
+  const handleExplainBreach = useCallback(async (asset) => {
+    if (!activeCriteriaConfig) return
+    const alerts = await explainBreach(asset, uploadedAhpResult?.cr ?? 0)
+    setUploadedBreachAlerts(prev => ({ ...prev, [asset.asset_id]: alerts }))
+  }, [activeCriteriaConfig, explainBreach, uploadedAhpResult])
 
   const ahpValid = ahpResult?.valid ?? false
 
@@ -435,9 +448,9 @@ export default function Dashboard() {
 
       {mode === 'uploaded' && (
         <>
-          {criteriaConfig && (
+          {activeCriteriaConfig && (
             <AHPMatrix
-              criteriaNames={criteriaConfig.criteria.map(c => c.name)}
+              criteriaNames={activeCriteriaConfig.criteria.map(c => c.name)}
               onWeightsUpdate={setUploadedAhpResult}
             />
           )}
@@ -449,6 +462,9 @@ export default function Dashboard() {
             errorMessage={errorMessage}
             isPredicting={isPredicting}
             hasPredictions={predictedAssets.length > 0}
+            criteriaApproved={criteriaApproved}
+            approvalChanges={approvalChanges}
+            onApproveCriteria={approveCriteria}
             onAnalyze={uploadAndAnalyze}
             onPredict={predictAll}
             onReset={resetUpload}
@@ -462,9 +478,11 @@ export default function Dashboard() {
           {predictedAssets.length > 0 && (
             <DynamicAssetTable
               assets={predictedAssets}
-              criteriaConfig={criteriaConfig}
+              criteriaConfig={activeCriteriaConfig}
               onExplain={handleDynamicExplain}
               explanations={uploadedExplanations}
+              onExplainBreach={handleExplainBreach}
+              breachAlerts={uploadedBreachAlerts}
             />
           )}
         </>

@@ -11,6 +11,9 @@ export default function useUpload() {
   const [uploadedFileName, setUploadedFileName] = useState(null)
   const [errorMessage, setErrorMessage] = useState(null)
   const [isPredicting, setIsPredicting] = useState(false)
+  const [criteriaApproved, setCriteriaApproved] = useState(false)
+  const [approvedCriteriaConfig, setApprovedCriteriaConfig] = useState(null)
+  const [approvalChanges, setApprovalChanges] = useState(0)
 
   const uploadAndAnalyze = useCallback(async (file) => {
     setUploadStatus('uploading')
@@ -42,6 +45,9 @@ export default function useUpload() {
       setUploadedAssets(data.assets)
       setModelPath(data.model_path)
       setPredictedAssets([])
+      setCriteriaApproved(false)
+      setApprovedCriteriaConfig(null)
+      setApprovalChanges(0)
       setUploadStatus('ready')
     } catch (err) {
       setErrorMessage(err.message)
@@ -49,11 +55,49 @@ export default function useUpload() {
     }
   }, [])
 
+  const approveCriteria = useCallback(async (editedCriteriaConfig) => {
+    if (!modelPath) return null
+
+    setErrorMessage(null)
+
+    try {
+      const res = await fetch('/upload/approve-criteria', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          criteria_config: editedCriteriaConfig,
+          model_path: modelPath,
+          file_path: uploadedFileName ? `data/raw/uploads/${uploadedFileName}` : null,
+        }),
+      })
+
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        throw new Error(detail?.detail ?? `Approve failed (${res.status})`)
+      }
+
+      const data = await res.json()
+      setCriteriaApproved(true)
+      setApprovedCriteriaConfig(data.criteria_config)
+      setApprovalChanges(data.changes_from_original)
+      return data
+    } catch (err) {
+      setErrorMessage(err.message)
+      return null
+    }
+  }, [modelPath, uploadedFileName])
+
   const predictAll = useCallback(async (weights, cr, manualScores) => {
     console.log('[useUpload] predictAll called with weights:', weights, '| cr:', cr, '| manualScores:', manualScores)
 
     if (!modelPath || !uploadedFileName) {
       console.warn('[useUpload] predictAll: missing modelPath or uploadedFileName — aborting', { modelPath, uploadedFileName })
+      return
+    }
+
+    if (!criteriaApproved) {
+      console.warn('[useUpload] predictAll: criteria not approved — aborting')
+      setErrorMessage('Criteria have not been approved. Complete the review step before running predictions.')
       return
     }
 
@@ -100,13 +144,14 @@ export default function useUpload() {
     } finally {
       setIsPredicting(false)
     }
-  }, [modelPath, uploadedFileName])
+  }, [modelPath, uploadedFileName, criteriaApproved])
 
   const explainAsset = useCallback(async (assetPayload) => {
-    if (!criteriaConfig) return null
+    const activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig
+    if (!activeCriteriaConfig) return null
 
     const sensorContext = {}
-    for (const crit of criteriaConfig.criteria) {
+    for (const crit of activeCriteriaConfig.criteria) {
       if (crit.manual_input) continue
       const col = crit.primary_column
       if (col) {
@@ -123,7 +168,7 @@ export default function useUpload() {
       }
     }
 
-    const n = criteriaConfig?.criteria?.length ?? 5
+    const n = activeCriteriaConfig?.criteria?.length ?? 5
     const body = {
       pump: assetPayload,
       weights: assetPayload.weights ?? Array(n).fill(+(1 / n).toFixed(6)),
@@ -135,8 +180,8 @@ export default function useUpload() {
       ci_low: assetPayload.ci_low ?? 0,
       ci_high: assetPayload.ci_high ?? 1.5,
       cr: assetPayload.cr ?? 0.05,
-      asset_type: criteriaConfig.asset_type ?? 'Unknown Asset',
-      failure_modes: criteriaConfig.failure_modes ?? [],
+      asset_type: activeCriteriaConfig.asset_type ?? 'Unknown Asset',
+      failure_modes: activeCriteriaConfig.failure_modes ?? [],
       sensor_context: sensorContext,
     }
 
@@ -157,7 +202,44 @@ export default function useUpload() {
     } catch (err) {
       return `Error: ${err.message}`
     }
-  }, [criteriaConfig])
+  }, [criteriaConfig, approvedCriteriaConfig])
+
+  const explainBreach = useCallback(async (asset, cr) => {
+    const activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig
+    if (!activeCriteriaConfig) return null
+
+    const body = {
+      asset_snapshot: asset,
+      breaches: asset.breaches ?? [],
+      criteria_config: activeCriteriaConfig,
+      model_path: modelPath ?? 'rul/dynamic_model.pkl',
+      cr: cr ?? 0,
+    }
+
+    try {
+      const res = await fetch('/upload/explain-breach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        throw new Error(detail?.detail ?? `Explain breach failed (${res.status})`)
+      }
+
+      const data = await res.json()
+      return data.breach_alerts
+    } catch (err) {
+      return [{
+        criterion_id: null,
+        criterion_name: null,
+        column: null,
+        severity: 'high',
+        alert_text: `Error: ${err.message}`,
+      }]
+    }
+  }, [criteriaConfig, approvedCriteriaConfig, modelPath])
 
   const resetUpload = useCallback(() => {
     setUploadStatus('idle')
@@ -170,6 +252,9 @@ export default function useUpload() {
     setUploadedFileName(null)
     setErrorMessage(null)
     setIsPredicting(false)
+    setCriteriaApproved(false)
+    setApprovedCriteriaConfig(null)
+    setApprovalChanges(0)
   }, [])
 
   return {
@@ -182,9 +267,14 @@ export default function useUpload() {
     modelPath,
     errorMessage,
     isPredicting,
+    criteriaApproved,
+    approvedCriteriaConfig,
+    approvalChanges,
+    approveCriteria,
     uploadAndAnalyze,
     predictAll,
     explainAsset,
+    explainBreach,
     resetUpload,
   }
 }

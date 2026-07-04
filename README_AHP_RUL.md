@@ -8,7 +8,9 @@
 
 The dashboard scores industrial assets using the Analytic Hierarchy Process (AHP) -- a structured method for multi-criteria risk ranking -- and predicts remaining useful life using a trained XGBoost model. Risk scores and RUL predictions update dynamically as the user adjusts the AHP pairwise comparison matrix. A GenAI explanation layer (Claude, via the Anthropic API) generates plain-English maintenance recommendations for each asset on demand, enriched by a RAG (Retrieval-Augmented Generation) knowledge pipeline that retrieves relevant engineering standards, past failure cases, and prior asset configurations.
 
-The dashboard operates in two modes. The default mode loads a pre-configured fleet of 5 KSB Calio 30-40 centrifugal pump assets from operational telemetry provided by the client. The upload mode accepts any asset type -- the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria and scoring thresholds for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data.
+The dashboard operates in two modes. The default mode loads a pre-configured fleet of 5 KSB Calio 30-40 centrifugal pump assets from operational telemetry provided by the client. The upload mode accepts any asset type -- the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria and scoring thresholds for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data. Claude's inferred criteria are always a draft: a human reviews and approves (or edits) them in the dashboard before they can drive any scoring or prediction.
+
+The RUL model for uploaded assets also looks beyond single-sensor thresholds: it tracks trend direction and cross-sensor correlation over a rolling window, and separately runs deterministic threshold-breach detection on every scoring pass, with Claude only invoked on demand to explain a breach that has already been found.
 
 Built as an internship project for Agelix Consulting to extend their asset lifecycle management platform, Assets Maestro. The default asset class is the KSB Calio 30-40 glandless circulator pump.
 
@@ -147,13 +149,23 @@ When a user uploads an Excel file (two sheets: Operational Telemetry and Failure
 
 1. Validates the file and detects column roles by keyword heuristics -- no specific column names are required.
 2. Queries the RAG knowledge base for relevant engineering standards, similar past CriteriaConfigs, and known failure cases.
-3. Calls the Anthropic API to infer 3-7 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges, enriched by retrieved domain knowledge.
-4. Stores the inferred CriteriaConfig in the knowledge base for future retrieval.
-5. Trains a fresh XGBoost model on the uploaded dataset.
+3. Calls the Anthropic API to infer 3-7 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges, enriched by retrieved domain knowledge. This is a **draft** -- it is stored provisionally but not yet trusted.
+4. Trains a fresh XGBoost model on the uploaded dataset (the model bundle is saved as unapproved).
+5. **The user reviews and approves the criteria** in the dashboard: criterion names, manual-input default scores, and threshold/penalty values are all editable (sensor column assignments are not, since changing them would invalidate the trained model). Approving locks the bundle and re-stores the SME-approved CriteriaConfig in the knowledge base for future retrieval -- Claude's original draft is not what gets remembered.
 6. Auto-generates a failure case document recording the asset type, sensors, failure modes, criteria, and training metrics.
-7. Scores each asset and predicts RUL using the user's AHP matrix.
+7. Scores each asset, runs deterministic threshold-breach detection, and predicts RUL using the user's AHP matrix. Predictions are only available once the criteria have been approved.
 
 All column name references flow through a central resolver module (`data/column_resolver.py`) -- no part of the pipeline hardcodes column names.
+
+### Multi-Sensor Correlation and Threshold Breach Detection
+
+For uploaded assets, the RUL feature set goes beyond single-sensor rolling statistics:
+
+- **Trend features** -- a 14-row rolling slope per sensor, showing whether a reading is degrading, stable, or improving.
+- **Cross-sensor features** -- for every pair of sensors: their mean-value interaction, whether their trends are aligned (both degrading together), and their rolling correlation coefficient. A composite stress index summarizes how many sensors are degrading in tandem (0 = none, 1 = all of them).
+- **Threshold breach detection** -- a pure deterministic check (`ahp/threshold_breach_detector.py`, no API call) that flags any sensor whose value has crossed from a "safe" scoring band into a risky one, with a severity of low/medium/high based on how far past the safe boundary it is.
+
+Both feed the RUL model as additional features and surface in the dashboard: a Multi-Sensor Analysis panel in the asset explanation popup, and a per-asset breach status column with an on-demand "Breach Alerts" button. Claude is only called to generate breach alert text for medium/high severity breaches, and only when the user asks for it -- never automatically during scoring.
 
 ### GenAI Explanations
 
@@ -205,9 +217,11 @@ GET `/ahp/assets` accepts query params: `weights` (repeated float), `c1_score` (
 
 | Method | Route | Description |
 |---|---|---|
-| POST | `/upload/analyze` | Upload Excel -> infer criteria, train model, score assets |
-| POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets |
-| POST | `/upload/explain` | Asset + AHP + RUL + asset type -> Claude explanation |
+| POST | `/upload/analyze` | Upload Excel -> infer draft criteria, train model (unapproved), score assets |
+| POST | `/upload/approve-criteria` | SME approves (optionally edited) criteria -> locks the model bundle |
+| POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets (400 if not yet approved) |
+| POST | `/upload/explain` | Asset + AHP + RUL + asset type -> Claude explanation (includes multi-sensor correlation summary) |
+| POST | `/upload/explain-breach` | Asset + detected breaches -> on-demand Claude alerts for medium/high severity breaches |
 
 ### `/rag` -- RAG Knowledge Base Management
 
@@ -285,12 +299,14 @@ agelix-consulting-project-2026/
 |   +-- ahp_engine.py              # Matrix math, CR calculation
 |   +-- risk_calculator.py         # Risk factor dot product
 |   +-- dynamic_criteria_scorer.py # Runtime CriteriaConfig interpreter
+|   +-- threshold_breach_detector.py # Deterministic threshold/penalty breach detection
 |   +-- api.py                     # /ahp/* endpoints
 +-- rul/                           # RUL prediction
 |   +-- feature_engineering.py     # 24-feature vector (default fleet)
 |   +-- ml_rul_model.py            # predict() + predict_adjusted()
 |   +-- train.py                   # Trains default fleet model -> model.pkl
-|   +-- rul_explainer.py           # Anthropic API explanation
+|   +-- rul_explainer.py           # Anthropic API explanation (+ correlation summary)
+|   +-- breach_explainer.py        # On-demand Anthropic API breach alerts
 |   +-- dynamic_*.py               # Dynamic equivalents for uploaded assets
 |   +-- api.py                     # /rul/* endpoints
 +-- data/
@@ -298,10 +314,11 @@ agelix-consulting-project-2026/
 |   +-- upload_schema.py           # Upload validation + column detection
 |   +-- schema_inferrer.py         # Claude API + RAG context -> CriteriaConfig
 |   +-- column_resolver.py         # Centralized column name lookups
-|   +-- dynamic_aggregator.py      # Asset snapshots for uploaded data
+|   +-- dynamic_aggregator.py      # Asset snapshots + multi-sensor trend/correlation features
 |   +-- raw/                       # Telemetry, maintenance log, uploads
 +-- upload/
-|   +-- api.py                     # /upload/* endpoints (wires RAG retrieval)
+|   +-- api.py                     # /upload/* endpoints (analyze, approve-criteria, predict-all,
+|   |                              # explain, explain-breach; wires RAG retrieval)
 +-- rag/
 |   +-- document_loader.py         # Loads + chunks PDFs, markdown, JSON configs
 |   +-- knowledge_base.py          # ChromaDB vector store (SentenceTransformer embeddings)

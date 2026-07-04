@@ -1,3 +1,4 @@
+import itertools
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,10 +11,12 @@ from data.schema_inferrer import infer_criteria_config
 from data.dynamic_aggregator import aggregate_uploaded_data
 from ahp.dynamic_criteria_scorer import score_asset_dynamic
 from ahp.criteria_scoring import convert_to_saaty
+from ahp.threshold_breach_detector import detect_breaches, get_breach_summary
 from rul.dynamic_train import train_dynamic_model
 from rul.dynamic_feature_engineering import build_dynamic_feature_vector
 from rul.dynamic_ml_rul_model import predict_adjusted_dynamic
 from rul.rul_explainer import explain
+from rul.breach_explainer import explain_all_breaches
 from data.column_resolver import get_sensor_columns
 from rag.retriever import retrieve_for_schema_inference, retrieve_for_explanation
 from rag.knowledge_base import store_criteria_config
@@ -64,6 +67,89 @@ def _generate_failure_case(criteria_config: dict, training_result: dict) -> None
         pass
 
 
+def _build_correlation_summary(snap: dict, criteria_config: dict) -> dict:
+    sensor_cols = sorted(get_sensor_columns(criteria_config))
+    pairs = []
+
+    for col_a, col_b in itertools.combinations(sensor_cols, 2):
+        val = snap.get(f"corr_{col_a}_{col_b}")
+        if val is None:
+            continue
+        corr = float(val)
+        pairs.append({
+            "col_a": col_a,
+            "col_b": col_b,
+            "correlation": round(corr, 4),
+            "direction": "co-degrading" if corr > 0 else "inverse",
+        })
+
+    top_pairs = sorted(pairs, key=lambda p: abs(p["correlation"]), reverse=True)[:5]
+
+    return {
+        "composite_stress_index": round(float(snap.get("composite_stress_index", 0.0)), 4),
+        "top_correlated_pairs": top_pairs,
+        "sensors_degrading_together": sum(1 for p in pairs if p["correlation"] > 0.6),
+    }
+
+
+def _validate_approved_criteria(criteria_config: dict, schema_summary: dict) -> None:
+    criteria = criteria_config.get("criteria", [])
+    if not (3 <= len(criteria) <= 7):
+        raise ValueError(
+            f"CriteriaConfig must have between 3 and 7 criteria, got {len(criteria)}."
+        )
+
+    valid_sensor_cols = set(schema_summary.get("sensor_columns", []))
+
+    for crit in criteria:
+        for field in ("id", "name", "description", "manual_input"):
+            if field not in crit or crit[field] in (None, ""):
+                raise ValueError(
+                    f"Criterion '{crit.get('id', '?')}' is missing required field '{field}'."
+                )
+
+        if crit.get("manual_input"):
+            continue
+
+        primary_col = crit.get("primary_column")
+        if not primary_col:
+            raise ValueError(
+                f"Criterion '{crit['id']}' is non-manual but missing 'primary_column'."
+            )
+        if primary_col not in valid_sensor_cols:
+            raise ValueError(
+                f"Criterion '{crit['id']}' primary_column '{primary_col}' is not one of the "
+                f"original schema sensor columns: {sorted(valid_sensor_cols)}."
+            )
+
+        thresholds = crit.get("thresholds", [])
+        if len(thresholds) < 2:
+            raise ValueError(
+                f"Criterion '{crit['id']}' must have at least 2 thresholds, got {len(thresholds)}."
+            )
+
+        for t in thresholds:
+            score = t.get("score")
+            if not isinstance(score, (int, float)) or isinstance(score, bool) or not (1 <= score <= 10):
+                raise ValueError(
+                    f"Criterion '{crit['id']}' has an invalid threshold score: {t!r}. "
+                    "Every threshold score must be a number between 1 and 10."
+                )
+
+
+def _count_criteria_changes(original: dict, edited: dict) -> int:
+    orig_by_id = {c.get("id"): c for c in original.get("criteria", [])}
+    changes = 0
+
+    for crit in edited.get("criteria", []):
+        orig = orig_by_id.get(crit.get("id"), {})
+        for key in ("name", "ui_label", "default_score", "thresholds", "penalties"):
+            if crit.get(key) != orig.get(key):
+                changes += 1
+
+    return changes
+
+
 class PredictAllInput(BaseModel):
     file_path: str
     weights: list[float]
@@ -98,6 +184,20 @@ class ExplainInput(BaseModel):
         if not (3 <= len(v) <= 7):
             raise ValueError("must have 3-7 elements")
         return v
+
+
+class ExplainBreachInput(BaseModel):
+    asset_snapshot: dict
+    breaches: list[dict]
+    criteria_config: dict = None
+    model_path: str = "rul/dynamic_model.pkl"
+    cr: float = 0.0
+
+
+class ApproveCriteriaInput(BaseModel):
+    criteria_config: dict
+    model_path: str = "rul/dynamic_model.pkl"
+    file_path: str = None
 
 
 @router.post("/analyze")
@@ -191,6 +291,12 @@ def predict_all(body: PredictAllInput):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Model not found at '{body.model_path}'.")
 
+    if not bundle.get("approved", False):
+        raise HTTPException(
+            status_code=400,
+            detail="Criteria have not been approved. Complete the review step before running predictions.",
+        )
+
     criteria_config = bundle["criteria_config"]
     schema_summary = bundle["schema_summary"]
 
@@ -211,8 +317,11 @@ def predict_all(body: PredictAllInput):
         weighted_scores = [body.weights[i] * saaty_list[i] for i in range(n_criteria)]
         risk_factor = sum(weighted_scores)
 
+        breaches = detect_breaches(snap, criteria_config)
+        breach_summary = get_breach_summary(breaches)
+
         vec = build_dynamic_feature_vector(
-            snap, criteria_config, body.weights, raw_scores,
+            snap, criteria_config, body.weights, raw_scores, breaches,
         )
 
         try:
@@ -237,6 +346,9 @@ def predict_all(body: PredictAllInput):
             "ci_high": prediction["ci_high"],
             "ci_low_months": round(prediction["ci_low"] * 12, 1),
             "ci_high_months": round(prediction["ci_high"] * 12, 1),
+            "correlation_summary": _build_correlation_summary(snap, criteria_config),
+            "breaches": breaches,
+            "breach_summary": breach_summary,
             **{k: v for k, v in snap.items()
                if k not in ("asset_id", "snapshot_date")},
         })
@@ -279,4 +391,71 @@ def explain_asset(body: ExplainInput):
     return {
         "asset_id": body.pump.get("asset_id", ""),
         "explanation": text,
+    }
+
+
+@router.post("/explain-breach")
+def explain_breach_endpoint(body: ExplainBreachInput):
+    if body.cr > _CR_THRESHOLD:
+        raise HTTPException(
+            status_code=400,
+            detail="AHP matrix is inconsistent (CR > 0.10). "
+                   "Revise pairwise comparisons.",
+        )
+
+    criteria_config = body.criteria_config
+    if criteria_config is None:
+        try:
+            bundle = joblib.load(body.model_path)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Model not found at '{body.model_path}'.")
+        criteria_config = bundle["criteria_config"]
+
+    retrieved_context = retrieve_for_explanation(
+        body.asset_snapshot,
+        criteria_config,
+        body.asset_snapshot.get("risk_factor", 0.0),
+    )
+
+    breach_alerts = explain_all_breaches(
+        body.asset_snapshot, body.breaches, criteria_config, retrieved_context,
+    )
+
+    return {
+        "asset_id": body.asset_snapshot.get("asset_id", ""),
+        "breach_alerts": breach_alerts,
+    }
+
+
+@router.post("/approve-criteria")
+def approve_criteria(body: ApproveCriteriaInput):
+    try:
+        bundle = joblib.load(body.model_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Model not found at '{body.model_path}'.")
+
+    schema_summary = bundle["schema_summary"]
+
+    try:
+        _validate_approved_criteria(body.criteria_config, schema_summary)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    changes = _count_criteria_changes(bundle["criteria_config"], body.criteria_config)
+
+    bundle["criteria_config"] = body.criteria_config
+    bundle["approved"] = True
+    joblib.dump(bundle, body.model_path)
+
+    try:
+        store_criteria_config(
+            body.criteria_config, body.criteria_config.get("asset_type", "unknown"),
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "approved",
+        "criteria_config": body.criteria_config,
+        "changes_from_original": changes,
     }

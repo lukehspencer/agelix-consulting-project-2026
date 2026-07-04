@@ -49,6 +49,31 @@ def explain(
 
     asset_id = pump.get("asset_id", "unknown")
 
+    correlation_block = ""
+    correlation_instruction = ""
+    correlation_summary = pump.get("correlation_summary")
+    if correlation_summary:
+        stress_idx = correlation_summary.get("composite_stress_index", 0.0)
+        top_pairs = correlation_summary.get("top_correlated_pairs", [])[:3]
+        pair_lines = "\n".join(
+            f"{p.get('col_a')} x {p.get('col_b')}: correlation = {p.get('correlation', 0.0):.2f} "
+            f"({'co-degrading' if p.get('correlation', 0.0) > 0 else 'inverse'})"
+            for p in top_pairs
+        )
+        correlation_block = f"""
+MULTI-SENSOR CORRELATION ANALYSIS:
+Composite stress index: {stress_idx:.3f}
+(0 = no sensors degrading, 1 = all sensors degrading simultaneously)
+Strongest correlated sensor pairs:
+{pair_lines}
+"""
+        correlation_instruction = (
+            " If the composite stress index is above 0.3 or any sensor pair shows "
+            "correlation above 0.6, mention the multi-sensor degradation pattern in "
+            "your explanation as it is a stronger failure indicator than any single "
+            "sensor alone."
+        )
+
     rag_block = ""
     cite_instruction = ""
     if retrieved_context and retrieved_context.get("retrieval_available"):
@@ -88,10 +113,10 @@ ML Predicted RUL: {predicted_rul} years
 Confidence Interval: {ci_low} to {ci_high} years
 
 {telemetry_block}
-
+{correlation_block}
 {failure_block}
 {rag_block}
-In 3-4 sentences explain why this pump has this RUL estimate, what the biggest risk drivers are given the AHP weights, and what maintenance action should be prioritized immediately.{cite_instruction}"""
+In 3-4 sentences explain why this pump has this RUL estimate, what the biggest risk drivers are given the AHP weights, and what maintenance action should be prioritized immediately.{cite_instruction}{correlation_instruction}"""
 
     try:
         client = anthropic.Anthropic()
