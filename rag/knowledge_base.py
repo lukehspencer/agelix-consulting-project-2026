@@ -1,4 +1,6 @@
 import json
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import chromadb
@@ -82,10 +84,18 @@ def query(query_text: str, n_results: int = 5, doc_type: str = None) -> list[str
     return results["documents"][0] if results["documents"] else []
 
 
+def _sanitize_asset_type(asset_type: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", asset_type).strip("_")
+
+
 def store_criteria_config(criteria_config: dict, asset_type: str) -> Path:
+    """Writes a new versioned CriteriaConfig file -- never overwrites an
+    existing one, so the full inference history per asset type is preserved.
+    """
     _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-    safe_name = asset_type.lower().replace(" ", "_").replace("/", "_")
-    config_path = _CONFIGS_DIR / f"{safe_name}.json"
+    safe_name = _sanitize_asset_type(asset_type)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    config_path = _CONFIGS_DIR / f"{safe_name}_{timestamp}.json"
     config_path.write_text(json.dumps(criteria_config, indent=2), encoding="utf-8")
     build_knowledge_base()
     return config_path

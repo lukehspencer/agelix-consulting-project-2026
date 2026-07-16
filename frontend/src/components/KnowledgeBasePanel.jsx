@@ -1,5 +1,100 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, Fragment } from 'react'
 import useKnowledgeBase from '../hooks/useKnowledgeBase'
+
+function AuditLogSection({ auditLog, auditLogStatus, fetchAuditLog }) {
+  const [expanded, setExpanded] = useState(false)
+  const [expandedRow, setExpandedRow] = useState(null)
+
+  function handleToggle() {
+    const next = !expanded
+    setExpanded(next)
+    if (next) fetchAuditLog()
+  }
+
+  const isLoading = auditLogStatus === 'loading'
+  const isError = auditLogStatus === 'error'
+
+  return (
+    <div className="kb-section">
+      <button className="kb-subsection-toggle" onClick={handleToggle}>
+        <h3 className="kb-section-title">Approval Audit Log</h3>
+        <span className={`kb-arrow${expanded ? ' kb-arrow-open' : ''}`}>&#9654;</span>
+      </button>
+
+      {expanded && (
+        <div className="kb-audit-body">
+          {isLoading && <p className="kb-empty">Loading audit log...</p>}
+          {isError && <p className="kb-status-err">Failed to load audit log.</p>}
+          {!isLoading && !isError && auditLog.length === 0 && (
+            <p className="kb-empty">No approvals logged yet.</p>
+          )}
+          {!isLoading && !isError && auditLog.length > 0 && (
+            <div className="registry-scroll">
+              <table className="audit-log-table">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Asset Type</th>
+                    <th>File</th>
+                    <th>Changes Made</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditLog.map((entry, idx) => {
+                    const isRowExpanded = expandedRow === idx
+                    return (
+                      <Fragment key={idx}>
+                        <tr
+                          className="audit-log-row"
+                          onClick={() => setExpandedRow(isRowExpanded ? null : idx)}
+                        >
+                          <td>{entry.timestamp}</td>
+                          <td>{entry.asset_type}</td>
+                          <td className="audit-log-file">{entry.file_path}</td>
+                          <td>{entry.changes_from_claude}</td>
+                        </tr>
+                        {isRowExpanded && (
+                          <tr className="audit-log-diff-row">
+                            <td colSpan={4}>
+                              {(entry.diff ?? []).length === 0 ? (
+                                <p className="kb-empty">No field-level changes recorded.</p>
+                              ) : (
+                                <table className="audit-diff-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Criterion</th>
+                                      <th>Field</th>
+                                      <th>Claude's Value</th>
+                                      <th>Approved Value</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {entry.diff.map((d, di) => (
+                                      <tr key={di}>
+                                        <td>{d.criterion_id}</td>
+                                        <td>{d.field}</td>
+                                        <td>{JSON.stringify(d.claude_value)}</td>
+                                        <td>{JSON.stringify(d.approved_value)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function KnowledgeBasePanel() {
   const [expanded, setExpanded] = useState(false)
@@ -13,6 +108,9 @@ export default function KnowledgeBasePanel() {
     fetchDocuments,
     uploadDocument,
     deleteDocument,
+    auditLog,
+    auditLogStatus,
+    fetchAuditLog,
   } = useKnowledgeBase()
 
   useEffect(() => {
@@ -127,6 +225,13 @@ export default function KnowledgeBasePanel() {
               </ul>
             )}
           </div>
+
+          {/* Approval Audit Log */}
+          <AuditLogSection
+            auditLog={auditLog}
+            auditLogStatus={auditLogStatus}
+            fetchAuditLog={fetchAuditLog}
+          />
         </div>
       )}
     </section>

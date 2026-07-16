@@ -51,6 +51,32 @@ function severityBadgeClass(severity) {
   return 'breach-low'
 }
 
+function mtbmArrow(recommendation) {
+  if (recommendation === 'shorten') return { symbol: '↓', className: 'mtbm-arrow-red' }
+  if (recommendation === 'extend') return { symbol: '↑', className: 'mtbm-arrow-green' }
+  if (recommendation === 'maintain') return { symbol: '—', className: 'mtbm-arrow-grey' }
+  return { symbol: '—', className: 'mtbm-arrow-grey' }
+}
+
+function mtbmBadge(recommendation) {
+  if (recommendation === 'shorten') return { label: 'Shorten ↓', className: 'mp-badge-red' }
+  if (recommendation === 'extend') return { label: 'Extend ↑', className: 'mp-badge-green' }
+  if (recommendation === 'maintain') return { label: 'On Track ✓', className: 'mp-badge-grey' }
+  return { label: 'Insufficient Data', className: 'mp-badge-grey' }
+}
+
+function decisionBadge(decision) {
+  if (decision === 'replace') return { label: 'Replace', className: 'mp-decision-red' }
+  if (decision === 'maintain') return { label: 'Maintain', className: 'mp-decision-green' }
+  return { label: 'Insufficient Data', className: 'mp-decision-grey' }
+}
+
+function confidenceClass(confidence) {
+  if (confidence === 'high') return 'mp-confidence-high'
+  if (confidence === 'medium') return 'mp-confidence-medium'
+  return 'mp-confidence-low'
+}
+
 function topCriterion(asset, criteria) {
   if (!criteria?.length || !asset.scores) return null
   let best = null
@@ -160,6 +186,8 @@ export default function DynamicAssetTable({
               <th className="th-score">Risk Factor</th>
               <th className="th-score">Breach Status</th>
               <th className="th-score">RUL (days)</th>
+              <th className="th-score">Est. MTBF</th>
+              <th className="th-score">PM Interval</th>
               <th className="th-score">CI</th>
               <th></th>
               <th></th>
@@ -176,6 +204,7 @@ export default function DynamicAssetTable({
               const isBreachRowLoading = loadingBreachId === asset.asset_id
               const status = breachStatus(asset)
               const alertRequired = asset.breach_summary?.alert_required ?? false
+              const mtbmInfo = asset.mtbm?.mtbm_recommended_days != null ? mtbmArrow(asset.mtbm.recommendation) : null
 
               return (
                 <tr key={asset.asset_id} className={isActive || isBreachActive ? 'row-expanded' : ''}>
@@ -204,6 +233,16 @@ export default function DynamicAssetTable({
                         {rulDays}
                       </span>
                     ) : '-'}
+                  </td>
+                  <td className="td-score">
+                    {asset.mtbf?.mtbf_days != null ? `${Math.round(asset.mtbf.mtbf_days)} d` : 'N/A'}
+                  </td>
+                  <td className="td-score">
+                    {mtbmInfo ? (
+                      <span className={`mtbm-arrow ${mtbmInfo.className}`}>
+                        {asset.mtbm.mtbm_recommended_days} d {mtbmInfo.symbol}
+                      </span>
+                    ) : 'N/A'}
                   </td>
                   <td className="td-score">
                     {ciLowDays != null && ciHighDays != null ? `${ciLowDays}–${ciHighDays} d` : '-'}
@@ -256,6 +295,16 @@ export default function DynamicAssetTable({
 
             {/* Multi-Sensor Analysis */}
             <MultiSensorAnalysis correlationSummary={activeAsset.correlation_summary} />
+
+            {/* Divider */}
+            <div className="explain-popup-divider" />
+
+            {/* Maintenance Planning */}
+            <MaintenancePlanning
+              mtbf={activeAsset.mtbf}
+              mtbm={activeAsset.mtbm}
+              replaceVsMaintain={activeAsset.replace_vs_maintain}
+            />
 
             {/* Divider */}
             <div className="explain-popup-divider" />
@@ -340,6 +389,7 @@ function MultiSensorAnalysis({ correlationSummary }) {
   if (!correlationSummary) return null
 
   const stressIndex = correlationSummary.composite_stress_index ?? 0
+  const clampedStressIndex = Math.min(1, Math.max(0, stressIndex))
   const degradingTogether = correlationSummary.sensors_degrading_together ?? 0
   const topPairs = (correlationSummary.top_correlated_pairs ?? []).slice(0, 2)
 
@@ -351,11 +401,11 @@ function MultiSensorAnalysis({ correlationSummary }) {
         <span className="stress-index-label">Composite Stress Index</span>
         <div className="stress-index-bar-track">
           <div
-            className={`stress-index-bar-fill ${stressColor(stressIndex)}`}
-            style={{ width: `${Math.min(100, Math.max(0, stressIndex * 100))}%` }}
+            className={`stress-index-bar-fill ${stressColor(clampedStressIndex)}`}
+            style={{ width: `${clampedStressIndex * 100}%` }}
           />
         </div>
-        <span className="stress-index-value">{stressIndex.toFixed(2)}</span>
+        <span className="stress-index-value">{clampedStressIndex.toFixed(2)}</span>
       </div>
 
       {degradingTogether > 0 && (
@@ -370,6 +420,60 @@ function MultiSensorAnalysis({ correlationSummary }) {
             <li key={idx}>{pairDescription(pair)}</li>
           ))}
         </ul>
+      )}
+    </div>
+  )
+}
+
+function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain }) {
+  if (!mtbf && !mtbm && !replaceVsMaintain) return null
+
+  const badge = mtbmBadge(mtbm?.recommendation)
+  const decision = decisionBadge(replaceVsMaintain?.decision)
+
+  return (
+    <div className="maintenance-planning">
+      <h4 className="multi-sensor-title">Maintenance Planning</h4>
+
+      <div className="mp-cards">
+        <div className="mp-card">
+          <span className="mp-card-title">Est. MTBF</span>
+          <span className="mp-card-value">
+            {mtbf?.mtbf_days != null ? `${mtbf.mtbf_days} days` : 'Insufficient data'}
+          </span>
+          {mtbf?.mtbf_confidence && (
+            <span className={`mp-confidence-badge ${confidenceClass(mtbf.mtbf_confidence)}`}>
+              {mtbf.mtbf_confidence.charAt(0).toUpperCase() + mtbf.mtbf_confidence.slice(1)}
+            </span>
+          )}
+          {mtbf?.mtbf_note && <p className="mp-card-note">{mtbf.mtbf_note}</p>}
+        </div>
+
+        <div className="mp-card">
+          <span className="mp-card-title">Optimal PM Interval</span>
+          <span className="mp-card-value">
+            {mtbm?.mtbm_recommended_days != null ? `${mtbm.mtbm_recommended_days} days` : 'Insufficient data'}
+          </span>
+          {mtbm?.current_interval_days != null && (
+            <span className="mp-card-sub">Current: {mtbm.current_interval_days} days</span>
+          )}
+          <span className={`mp-badge ${badge.className}`}>{badge.label}</span>
+          {mtbm?.recommendation_text && <p className="mp-card-note">{mtbm.recommendation_text}</p>}
+        </div>
+
+        <div className="mp-card">
+          <span className="mp-card-title">Economic Decision</span>
+          <span className={`mp-decision-value ${decision.className}`}>{decision.label}</span>
+          {replaceVsMaintain?.rationale && (
+            <p className="mp-card-note mp-card-note-clamp">{replaceVsMaintain.rationale}</p>
+          )}
+        </div>
+      </div>
+
+      {mtbm?.next_maintenance_date && (
+        <p className="mp-next-maintenance">
+          Next Recommended Maintenance: <strong>{mtbm.next_maintenance_date}</strong>
+        </p>
       )}
     </div>
   )

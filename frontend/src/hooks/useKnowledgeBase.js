@@ -4,6 +4,22 @@ export default function useKnowledgeBase() {
   const [documents, setDocuments] = useState({ manuals: [], failure_cases: [], criteria_configs: [] })
   const [uploadStatus, setUploadStatus] = useState('idle')
   const [errorMessage, setErrorMessage] = useState(null)
+  const [auditLog, setAuditLog] = useState([])
+  const [auditLogStatus, setAuditLogStatus] = useState('idle')
+
+  const fetchAuditLog = useCallback(async () => {
+    setAuditLogStatus('loading')
+    try {
+      const res = await fetch('/upload/audit-log')
+      if (!res.ok) throw new Error(`Server error ${res.status}`)
+      const data = await res.json()
+      setAuditLog(data.entries ?? [])
+      setAuditLogStatus('done')
+    } catch (err) {
+      console.error('Failed to fetch audit log:', err)
+      setAuditLogStatus('error')
+    }
+  }, [])
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -61,5 +77,8 @@ export default function useKnowledgeBase() {
     fetchDocuments,
     uploadDocument,
     deleteDocument,
+    auditLog,
+    auditLogStatus,
+    fetchAuditLog,
   }
 }

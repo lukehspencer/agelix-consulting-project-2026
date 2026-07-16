@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
@@ -11,6 +13,13 @@ _BASE_DIR = Path(__file__).parent.parent
 _MANUALS_DIR = _BASE_DIR / "docs" / "manuals"
 _FAILURE_CASES_DIR = _BASE_DIR / "docs" / "failure_cases"
 _CONFIGS_DIR = Path(__file__).parent / "stored_configs"
+
+_CONFIG_TIMESTAMP_RE = re.compile(r"_(\d{8}_\d{6})\.json$")
+
+
+def _config_timestamp(filename: str) -> str:
+    match = _CONFIG_TIMESTAMP_RE.search(filename)
+    return match.group(1) if match else ""
 
 
 @router.post("/upload-document")
@@ -40,11 +49,25 @@ async def upload_document(file: UploadFile = File(...)):
 def list_documents():
     manuals = sorted(p.name for p in _MANUALS_DIR.glob("*.pdf")) if _MANUALS_DIR.exists() else []
     failure_cases = sorted(p.name for p in _FAILURE_CASES_DIR.glob("*.md")) if _FAILURE_CASES_DIR.exists() else []
-    criteria_configs = sorted(p.name for p in _CONFIGS_DIR.glob("*.json")) if _CONFIGS_DIR.exists() else []
+
+    config_paths = list(_CONFIGS_DIR.glob("*.json")) if _CONFIGS_DIR.exists() else []
+    config_paths.sort(key=lambda p: _config_timestamp(p.name), reverse=True)
+    criteria_configs = [p.name for p in config_paths]
+
+    latest_per_asset_type = {}
+    for p in config_paths:
+        try:
+            asset_type = json.loads(p.read_text(encoding="utf-8")).get("asset_type")
+        except Exception:
+            asset_type = None
+        if asset_type and asset_type not in latest_per_asset_type:
+            latest_per_asset_type[asset_type] = p.name
+
     return {
         "manuals": manuals,
         "failure_cases": failure_cases,
         "criteria_configs": criteria_configs,
+        "latest_per_asset_type": latest_per_asset_type,
     }
 
 

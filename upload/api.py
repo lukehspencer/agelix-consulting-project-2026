@@ -17,9 +17,11 @@ from rul.dynamic_feature_engineering import build_dynamic_feature_vector
 from rul.dynamic_ml_rul_model import predict_adjusted_dynamic
 from rul.rul_explainer import explain
 from rul.breach_explainer import explain_all_breaches
+from rul.mtbf_mtbm import calculate_mtbf, calculate_mtbm, calculate_replace_vs_maintain
 from data.column_resolver import get_sensor_columns
 from rag.retriever import retrieve_for_schema_inference, retrieve_for_explanation
 from rag.knowledge_base import store_criteria_config
+from rag.audit_log import log_approval, get_audit_log
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
@@ -320,6 +322,18 @@ def predict_all(body: PredictAllInput):
         breaches = detect_breaches(snap, criteria_config)
         breach_summary = get_breach_summary(breaches)
 
+        mtbf_result = calculate_mtbf(snap, criteria_config)
+        mtbm_result = calculate_mtbm(
+            mtbf_days=mtbf_result["mtbf_days"],
+            risk_factor=risk_factor,
+            current_interval_days=snap.get("days_since_last_event", 90),
+        )
+        replace_maintain = calculate_replace_vs_maintain(
+            mtbf_days=mtbf_result["mtbf_days"],
+            maintenance_cost_last_year=snap.get("maintenance_cost_last_year", 0),
+            asset_snapshot=snap,
+        )
+
         vec = build_dynamic_feature_vector(
             snap, criteria_config, body.weights, raw_scores, breaches,
         )
@@ -349,6 +363,9 @@ def predict_all(body: PredictAllInput):
             "correlation_summary": _build_correlation_summary(snap, criteria_config),
             "breaches": breaches,
             "breach_summary": breach_summary,
+            "mtbf": mtbf_result,
+            "mtbm": mtbm_result,
+            "replace_vs_maintain": replace_maintain,
             **{k: v for k, v in snap.items()
                if k not in ("asset_id", "snapshot_date")},
         })
@@ -441,21 +458,39 @@ def approve_criteria(body: ApproveCriteriaInput):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    changes = _count_criteria_changes(bundle["criteria_config"], body.criteria_config)
+    original_config = bundle["criteria_config"]
+    changes = _count_criteria_changes(original_config, body.criteria_config)
 
     bundle["criteria_config"] = body.criteria_config
     bundle["approved"] = True
     joblib.dump(bundle, body.model_path)
 
+    config_path = None
     try:
-        store_criteria_config(
+        config_path = store_criteria_config(
             body.criteria_config, body.criteria_config.get("asset_type", "unknown"),
         )
     except Exception:
         pass
 
+    approved_at = log_approval(
+        file_path=body.file_path,
+        config_filename=config_path.name if config_path else None,
+        asset_type=body.criteria_config.get("asset_type", "unknown"),
+        original_config=original_config,
+        approved_config=body.criteria_config,
+        changes_count=changes,
+    )
+
     return {
         "status": "approved",
         "criteria_config": body.criteria_config,
         "changes_from_original": changes,
+        "approved_at": approved_at,
     }
+
+
+@router.get("/audit-log")
+def get_upload_audit_log():
+    entries = get_audit_log()
+    return {"entries": entries, "total_entries": len(entries)}

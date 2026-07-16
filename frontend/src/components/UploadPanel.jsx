@@ -434,7 +434,7 @@ export default function UploadPanel({
 
           {trainingResult && (
             <div className="training-strip">
-              Model trained on {trainingResult.n_train_samples} samples — Test RMSE: {trainingResult.test_rmse.toFixed(3)} years
+              Model trained on {trainingResult.n_train_samples} samples — Test RMSE: {Math.round(trainingResult.test_rmse * 365)} days
             </div>
           )}
 

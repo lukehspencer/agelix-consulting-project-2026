@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-An asset management dashboard for **Agelix Consulting** extending the *Assets Maestro* platform. The system combines AHP (Analytic Hierarchy Process) risk scoring with XGBoost ML-based Remaining Useful Life prediction, Claude-powered GenAI explainability, and a RAG (Retrieval-Augmented Generation) knowledge pipeline that enriches both schema inference and RUL explanations with domain knowledge from manuals, past failure cases, and stored CriteriaConfigs. It operates in two modes: a default fleet mode for 5 KSB Calio 30-40 pumps with fixed scoring rules, and an uploaded asset mode that accepts any asset type's telemetry and uses Claude to infer AHP criteria dynamically.
+An asset management dashboard for **Agelix Consulting** extending the *Assets Maestro* platform. The system combines AHP (Analytic Hierarchy Process) risk scoring with XGBoost ML-based Remaining Useful Life prediction, Claude-powered GenAI explainability, and a RAG (Retrieval-Augmented Generation) knowledge pipeline that enriches both schema inference and RUL explanations with domain knowledge from manuals, past failure cases, and stored CriteriaConfigs. The system has two backend pipelines: a default fleet mode for 5 KSB Calio 30-40 pumps with fixed scoring rules, and an uploaded asset mode that accepts any asset type's telemetry and uses Claude to infer AHP criteria dynamically. **The dashboard UI currently renders only the uploaded asset mode** -- the default fleet mode's backend endpoints (`ahp/api.py`, `rul/api.py`) remain fully functional and are used directly by the AI team, but nothing in `Dashboard.jsx` renders them anymore (see Frontend Architecture).
 
 ---
 
@@ -11,7 +11,7 @@ An asset management dashboard for **Agelix Consulting** extending the *Assets Ma
 The system has two parallel data pipelines sharing the same AHP engine and frontend. The default fleet pipeline uses hardcoded scoring rules calibrated to KSB pumps. The upload pipeline uses a CriteriaConfig dict -- inferred by Claude from the uploaded data -- as the single source of truth for all column names, scoring thresholds, and failure detection. No file downstream of schema_inferrer.py may hardcode a column name.
 
 ```
-Default Fleet Mode:
+Default Fleet Mode (backend only -- not rendered in the dashboard UI):
   CEO telemetry + maintenance log
   -> telemetry_aggregator.py (per-pump snapshots)
   -> criteria_scoring.py (AHP scores C1-C5)
@@ -20,7 +20,7 @@ Default Fleet Mode:
   -> feature_engineering.py + ml_rul_model.py (24-feature RUL)
   -> rul_explainer.py (Claude explanation)
   -> FastAPI (ahp/api.py + rul/api.py)
-  -> React dashboard (default mode)
+  -> (endpoints remain live for direct API use; Dashboard.jsx no longer renders this mode)
 
 Upload Mode:
   User Excel file (.xlsx)
@@ -31,11 +31,13 @@ Upload Mode:
   -> dynamic_train.py (trains XGBoost model on the draft config, bundle["approved"] = False)
   -> SME Review & Approve gate (React: UploadPanel.jsx review screen)
      -> POST /upload/approve-criteria (validates edits, locks bundle["criteria_config"],
-        sets bundle["approved"] = True, re-stores the approved config via knowledge_base.py)
+        sets bundle["approved"] = True, re-stores the approved config via knowledge_base.py
+        as a new versioned file, logs the draft-vs-approved diff via rag/audit_log.py)
   -> column_resolver.py (all column lookups, always against the approved config)
   -> dynamic_aggregator.py (asset snapshots + rolling + multi-sensor trend/correlation features)
   -> dynamic_criteria_scorer.py (AHP scores from the approved CriteriaConfig)
   -> threshold_breach_detector.py (deterministic threshold/penalty breach detection, no API call)
+  -> mtbf_mtbm.py (deterministic MTBF / MTBM / replace-vs-maintain estimates, no API call)
   -> dynamic_feature_engineering.py (feature vector: rolling + correlation + breach features)
   -> dynamic_ml_rul_model.py (RUL -- POST /upload/predict-all requires bundle["approved"] == True)
   -> auto-generate failure case markdown (docs/failure_cases/)
@@ -43,16 +45,21 @@ Upload Mode:
   -> rul_explainer.py (Claude explanation with retrieved_context + correlation_summary)
   -> breach_explainer.py (on-demand Claude alert for high/medium severity breaches only)
   -> FastAPI (upload/api.py)
-  -> React dashboard (uploaded mode)
+  -> React dashboard (Dashboard.jsx's only rendered view)
 
 RAG Knowledge Pipeline:
   docs/manuals/ (PDF manuals)
   + docs/failure_cases/ (auto-generated + manual markdown)
-  + rag/stored_configs/ (saved CriteriaConfigs as JSON)
+  + rag/stored_configs/ (saved CriteriaConfigs as versioned JSON, one file per approval)
   -> document_loader.py (load + chunk all three types)
   -> knowledge_base.py (SentenceTransformer embeddings -> ChromaDB)
   -> retriever.py (targeted queries per use case)
   -> injected into schema_inferrer.py and rul_explainer.py prompts
+
+Audit Trail (parallel to the above, not part of retrieval):
+  Every POST /upload/approve-criteria call
+  -> rag/audit_log.py log_approval() (draft vs. approved diff, appended to docs/audit_log.jsonl)
+  -> GET /upload/audit-log (read back for the KnowledgeBasePanel's Approval Audit Log viewer)
 ```
 
 ---
@@ -87,6 +94,7 @@ agelix-consulting-project-2026/
 |   +-- train.py                           # FROZEN -- trains default KSB XGBoost model
 |   +-- rul_explainer.py                   # optional params added with backward-compatible defaults
 |   +-- breach_explainer.py                # on-demand Claude alert for a single threshold breach
+|   +-- mtbf_mtbm.py                       # deterministic MTBF/MTBM/replace-vs-maintain estimates
 |   +-- api.py                             # FROZEN
 |   +-- model.pkl                          # trained default model (generated by train.py)
 |   +-- dynamic_feature_engineering.py     # variable-length feature vector (uploaded assets)
@@ -123,33 +131,35 @@ agelix-consulting-project-2026/
 |   +-- retriever.py                       # RAG retrieval entry point for all use cases
 |   +-- ingest.py                          # CLI: python -m rag.ingest [--rebuild]
 |   +-- api.py                             # /rag/* endpoints (upload, list, delete documents)
+|   +-- audit_log.py                       # writes/reads docs/audit_log.jsonl (draft vs approved diffs)
 |   +-- chroma_db/                         # ChromaDB persistent store (gitignored)
-|   +-- stored_configs/                    # saved CriteriaConfig JSON files
+|   +-- stored_configs/                    # saved CriteriaConfig JSON files, versioned per approval
 |
 +-- frontend/
 |   +-- src/
 |       +-- App.jsx
 |       +-- components/
-|       |   +-- Dashboard.jsx              # orchestrates all components + mode toggle
-|       |   +-- AHPMatrix.jsx
-|       |   +-- DataUpload.jsx
-|       |   +-- WeightDisplay.jsx
-|       |   +-- AssetRegistry.jsx
-|       |   +-- RiskRanking.jsx
-|       |   +-- CriteriaContribution.jsx
-|       |   +-- RiskScatterPlot.jsx
-|       |   +-- ManualScoreInputs.jsx
-|       |   +-- RULDisplay.jsx
-|       |   +-- RULExplanation.jsx
+|       |   +-- Dashboard.jsx              # renders only the uploaded-mode view -- no mode toggle
+|       |   +-- AHPMatrix.jsx              # rendered once a criteria config exists
+|       |   +-- DataUpload.jsx             # orphaned -- not imported by Dashboard.jsx
+|       |   +-- WeightDisplay.jsx          # orphaned -- default-fleet-only, not imported by Dashboard.jsx
+|       |   +-- AssetRegistry.jsx          # orphaned -- default-fleet-only, not imported by Dashboard.jsx
+|       |   +-- RiskRanking.jsx            # orphaned -- default-fleet-only, not imported by Dashboard.jsx
+|       |   +-- CriteriaContribution.jsx   # orphaned -- default-fleet-only, not imported by Dashboard.jsx
+|       |   +-- RiskScatterPlot.jsx        # orphaned -- default-fleet-only, not imported by Dashboard.jsx
+|       |   +-- ManualScoreInputs.jsx      # orphaned -- not imported by Dashboard.jsx (uploaded mode edits
+|       |   |                             # manual default_score inline inside UploadPanel's review cards instead)
+|       |   +-- RULDisplay.jsx             # orphaned -- default-fleet-only, not imported by Dashboard.jsx
+|       |   +-- RULExplanation.jsx         # orphaned -- default-fleet-only, not imported by Dashboard.jsx
 |       |   +-- UploadPanel.jsx            # file drop + AI criteria review/approve screen + predict button
-|       |   +-- KnowledgeBasePanel.jsx     # collapsible RAG document manager (uploaded mode)
-|       |   +-- DynamicAssetTable.jsx      # dynamic risk ranking + RUL + breach status/alerts table
+|       |   +-- KnowledgeBasePanel.jsx     # collapsible RAG document manager + Approval Audit Log viewer
+|       |   +-- DynamicAssetTable.jsx      # risk ranking + RUL + breach status/alerts + MTBF/MTBM columns
 |       +-- hooks/
-|       |   +-- useAHP.js
-|       |   +-- useRiskScores.js
-|       |   +-- useRUL.js
+|       |   +-- useAHP.js                  # used internally by AHPMatrix.jsx
+|       |   +-- useRiskScores.js           # orphaned -- default-fleet-only, not imported by Dashboard.jsx
+|       |   +-- useRUL.js                  # orphaned -- default-fleet-only, not imported by Dashboard.jsx
 |       |   +-- useUpload.js              # upload flow state management
-|       |   +-- useKnowledgeBase.js       # RAG document list + upload/delete state
+|       |   +-- useKnowledgeBase.js       # RAG document list + upload/delete state + audit log fetch
 |       +-- utils/
 |           +-- dateUtils.js
 |           +-- dataParser.js
@@ -173,6 +183,7 @@ agelix-consulting-project-2026/
     +-- rul-methodology.md
     +-- manuals/                            # PDF manuals for RAG ingestion
     +-- failure_cases/                      # auto-generated + manual failure case markdown
+    +-- audit_log.jsonl                      # append-only approval audit trail (auto-created)
 ```
 
 ---
@@ -280,34 +291,21 @@ If a role cannot be detected, validation fails with an error message listing all
 
 ---
 
-## Two Dashboard Modes
+## Two Backend Modes, One Rendered Dashboard
 
-### Default Fleet Mode
+### Default Fleet Mode (backend only)
 
-Loads 5 KSB Calio 30-40 pumps from CEO telemetry via `telemetry_aggregator.py`. AHP criteria are fixed (C1-C5 as defined below). C1 (Criticality) and C4 (Downtime Impact) are manual inputs via ManualScoreInputs.jsx. C2, C3, C5 are auto-derived from telemetry.
+Loads 5 KSB Calio 30-40 pumps from CEO telemetry via `telemetry_aggregator.py`. AHP criteria are fixed (C1-C5 as defined below). C1 (Criticality) and C4 (Downtime Impact) are manual inputs; C2, C3, C5 are auto-derived from telemetry. All of `ahp/api.py` and `rul/api.py` remain fully functional and are used directly by the AI team, but **`Dashboard.jsx` no longer imports or renders any component for this mode** -- no mode toggle, no KPI cards, no `WeightDisplay`/`AssetRegistry`/`RiskRanking`/`CriteriaContribution`/`RiskScatterPlot`/`RULDisplay`/`RULExplanation`, no score history log. Those component files and the `useRiskScores`/`useRUL` hooks still exist on disk (kept intentionally, never deleted) but are orphaned -- nothing in the frontend imports them anymore.
 
-Dashboard layout (top to bottom):
-1.  AHPMatrix
-2.  ManualScoreInputs (C1 Criticality default 7, C4 Downtime Impact default 6)
-3.  KPI Summary Cards
-4.  WeightDisplay
-5.  AssetRegistry
-6.  RiskRanking
-7.  CriteriaContribution
-8.  RiskScatterPlot
-9.  RULDisplay (RUL in months, converted from rul_years * 12 at display layer)
-10. RULExplanation (RUL header also in months)
-11. Score History Log
+### Uploaded Asset Mode (the dashboard's only rendered view)
 
-### Uploaded Asset Mode
-
-Accepts any asset type with operational telemetry and a failure/maintenance log. Claude infers AHP criteria dynamically from the uploaded data.
+Accepts any asset type with operational telemetry and a failure/maintenance log. Claude infers AHP criteria dynamically from the uploaded data. `Dashboard.jsx` renders directly into this view on load -- there is nothing to toggle to.
 
 Dashboard layout (top to bottom):
-1.  AHPMatrix (same component, same CR logic)
-2.  ManualScoreInputs (labels from CriteriaConfig, not hardcoded)
-3.  UploadPanel (file drop + AI criteria preview + training results)
-4.  DynamicAssetTable (risk ranking + RUL + inline explanations)
+1.  AHPMatrix (rendered once a criteria config -- draft or approved -- exists; labels from CriteriaConfig, not hardcoded)
+2.  UploadPanel (file drop + Review & Approve Criteria screen + predict button, gated on approval)
+3.  KnowledgeBasePanel (collapsible; manuals/failure cases/criteria configs + Approval Audit Log)
+4.  DynamicAssetTable (risk ranking + RUL + MTBF/MTBM columns + breach status + inline explanations)
 
 ---
 
@@ -688,6 +686,46 @@ Validates: 3-7 criteria; every criterion has `id`/`name`/`description`/`manual_i
 
 `POST /upload/predict-all` loads `criteria_config` exclusively from the model bundle (never from the request body) and returns HTTP 400 if `bundle.get("approved")` is not `True`: `"Criteria have not been approved. Complete the review step before running predictions."` This is the same CR > 0.10 style hard gate applied to an unapproved CriteriaConfig -- there is no way to bypass it from the API layer, and the frontend enforces the identical rule by disabling the Run button.
 
+### Versioned CriteriaConfig Storage
+
+`knowledge_base.store_criteria_config()` never overwrites a prior file for the same asset type. Filenames are `{sanitized_asset_type}_{YYYYMMDD_HHMMSS}.json` (UTC), e.g. `KSB_Calio_Centrifugal_Pump_20260701_142311.json`. Sanitization replaces any run of non-alphanumeric characters with a single underscore and preserves the original casing -- it does not lowercase. Every call to `store_criteria_config()` (after schema inference, and again after approval with the SME-edited version) writes a brand-new file, so the full inference history per asset type is preserved on disk and each gets its own ChromaDB document ID.
+
+`GET /rag/documents` (see FastAPI Endpoints) sorts `criteria_configs` newest-first by the timestamp parsed out of the filename, and additionally returns `latest_per_asset_type`, built by reading each file's actual `asset_type` field from its JSON content (not reverse-engineered from the sanitized filename, since that transform is lossy) and keeping the first -- i.e. newest -- file seen per asset type. Legacy files saved before this scheme existed (no timestamp suffix) degrade gracefully to the bottom of the sort rather than erroring.
+
+### Audit Trail Logging (`rag/audit_log.py`)
+
+Every `POST /upload/approve-criteria` call records what Claude suggested versus what the human actually approved.
+
+```python
+log_approval(file_path, asset_type, original_config, approved_config,
+             changes_count, config_filename=None) -> str
+get_audit_log() -> list[dict]
+```
+
+`log_approval()` appends one JSON object per line to `docs/audit_log.jsonl` (created on first use) containing `timestamp`, `config_filename` (the exact versioned file written by `store_criteria_config()` for this approval), `file_path`, `asset_type`, `changes_from_claude`, `original_criteria`/`approved_criteria` (each criterion reduced to `id`/`name`/`thresholds`/`default_score`), and a `diff` list -- one entry per changed field (`name`, `thresholds`, `default_score`, `penalties`) per criterion, each with `criterion_id`, `field`, `claude_value`, `approved_value`. Never raises: on any failure it prints a warning and returns `""`. `get_audit_log()` reads the file back into a list of dicts, returning `[]` if it doesn't exist yet.
+
+`upload/api.py`'s `approve_criteria()` handler captures `bundle["criteria_config"]` as `original_config` *before* overwriting it, calls `log_approval()` after the bundle is saved, and returns the logged timestamp to the caller as `approved_at` (see `POST /upload/approve-criteria` response). `GET /upload/audit-log` returns `{"entries": [...], "total_entries": int}` by calling `get_audit_log()` directly -- entries are the full stored dicts, not a trimmed projection.
+
+The KnowledgeBasePanel's "Approval Audit Log" section (see Frontend Architecture) fetches this endpoint lazily on its own expand toggle (separate from the panel's own expand, and separate from the manuals/failure-cases/configs fetch), showing a Timestamp/Asset Type/File/Changes Made table where clicking a row expands a Criterion/Field/Claude's Value/Approved Value diff table.
+
+### Maintenance Planning: MTBF, MTBM, Replace-vs-Maintain (`rul/mtbf_mtbm.py`)
+
+Simplified, deterministic (no API call) approximations run on every `/upload/predict-all` call, for every asset -- not full Weibull statistical models.
+
+```python
+calculate_mtbf(asset_snapshot, criteria_config) -> dict
+calculate_mtbm(mtbf_days, risk_factor, current_interval_days=90) -> dict
+calculate_replace_vs_maintain(mtbf_days, maintenance_cost_last_year, asset_snapshot) -> dict
+```
+
+`calculate_mtbf()` estimates days between failures from `total_failure_count` and `total_runtime_hours` (using `operating_hours_per_day` from the snapshot, defaulting to 22 if absent): `>= 2` failures divides total operating days by the failure count (`basis="observed_failures"`); exactly `1` failure divides `total_runtime_hours` by 24 as a rough single-data-point approximation (`basis="single_failure"`); `0` failures returns `mtbf_days=None` (`basis="insufficient_data"`). `mtbf_confidence` is `"high"` at 5+ failures, `"medium"` at 2-4, `"low"` below that. Returns `{"mtbf_days", "mtbf_confidence", "mtbf_note", "basis"}`.
+
+`calculate_mtbm()` takes `mtbf_days * 0.6` as a base recommended interval (industry heuristic: maintain at 60% of MTBF), then shortens it by up to 40% as `risk_factor` (1-9 Saaty scale) rises: `mtbm_adjusted = base * (1 - ((risk_factor - 1) / 8) * 0.4)`. Compares the rounded result to `current_interval_days` (passed in from the asset's `days_since_last_event` at the call site) to recommend `"shorten"` (< 80% of current), `"extend"` (> 120% of current), or `"maintain"`. Returns `{"mtbm_recommended_days", "current_interval_days", "recommendation", "recommendation_text", "next_maintenance_date"}` (ISO date, today + recommended days). If `mtbf_days` is `None`, every field is `None` except `recommendation = "insufficient_data"`.
+
+`calculate_replace_vs_maintain()` opportunistically searches `asset_snapshot` for any key (excluding `maintenance_cost_last_year` itself, to avoid matching the input against itself) whose name contains "replacement", "value", or "cost" (case-insensitive) and holds a numeric value, using it as `estimated_replacement_cost`; falls back to a flagged $50,000 default (`replacement_cost_estimated=True`) if nothing matches. Amortizes that cost over `max(mtbf_days / 365, 1)` years and compares it to `annual_maintenance_cost`: `decision="replace"` if maintenance cost exceeds the amortized replacement cost per year, else `"maintain"`; `"insufficient_data"` if `mtbf_days` is `None`.
+
+`upload/api.py`'s `POST /upload/predict-all` calls all three per asset and attaches `mtbf`, `mtbm`, `replace_vs_maintain` to each result (see FastAPI Endpoints). The frontend shows these in a "Maintenance Planning" section of the explain popup (three cards -- MTBF with confidence badge, PM interval with shorten/extend/maintain badge, economic decision -- plus a bold "Next Recommended Maintenance" date) and as two extra risk-ranking table columns, "Est. MTBF" and "PM Interval" (colored arrow: red down for shorten, green up for extend, grey dash for maintain).
+
 ---
 
 ## RAG Knowledge Pipeline
@@ -727,7 +765,7 @@ Returns list of content strings. Filters by `doc_type` metadata when provided. R
 ```python
 store_criteria_config(criteria_config, asset_type) -> Path
 ```
-Saves CriteriaConfig as JSON to `rag/stored_configs/<asset_type>.json` and calls `build_knowledge_base()` to add it to the store. Called automatically after each successful schema inference in `upload/api.py`.
+Saves CriteriaConfig as JSON to `rag/stored_configs/<sanitized_asset_type>_<YYYYMMDD_HHMMSS>.json` (see Upload Pipeline > Versioned CriteriaConfig Storage -- never overwrites a prior file) and calls `build_knowledge_base()` to add it to the store. Called automatically after each successful schema inference in `upload/api.py`, and again after each successful `POST /upload/approve-criteria` with the SME-approved version.
 
 ### retriever.py
 
@@ -972,6 +1010,7 @@ POST /rul/explain body:
 | POST | `/upload/predict-all` | Re-score + predict RUL with user weights; 400 if the bundle is not yet approved |
 | POST | `/upload/explain` | Claude explanation for uploaded asset with dynamic sensor context + correlation summary |
 | POST | `/upload/explain-breach` | On-demand Claude alerts for an asset's high/medium severity threshold breaches |
+| GET  | `/upload/audit-log` | Full approval audit trail (draft vs. approved diffs across all uploads) |
 
 POST /upload/approve-criteria body:
 ```json
@@ -979,16 +1018,23 @@ POST /upload/approve-criteria body:
 ```
 Response:
 ```json
-{"status": "approved", "criteria_config": {}, "changes_from_original": 2}
+{"status": "approved", "criteria_config": {}, "changes_from_original": 2, "approved_at": "2026-07-16T21:47:38"}
 ```
-Returns HTTP 422 with a specific message if validation fails (wrong criteria count, missing fields, unknown `primary_column`, too few thresholds, out-of-range score).
+Returns HTTP 422 with a specific message if validation fails (wrong criteria count, missing fields, unknown `primary_column`, too few thresholds, out-of-range score). `approved_at` is the timestamp `rag/audit_log.py` logged the approval under (empty string if logging itself failed -- logging never blocks the approval).
+
+GET /upload/audit-log response:
+```json
+{"entries": [{"timestamp": "...", "config_filename": "...", "file_path": "...", "asset_type": "...",
+  "changes_from_claude": 2, "original_criteria": [], "approved_criteria": [], "diff": []}],
+ "total_entries": 1}
+```
 
 POST /upload/predict-all body:
 ```json
 {"file_path": "data/raw/uploads/file.xlsx", "weights": [0.35, 0.25, 0.2, 0.12, 0.08],
  "cr": 0.07, "manual_scores": {"C1": 7, "C4": 6}, "model_path": "rul/dynamic_model.pkl"}
 ```
-`weights` length must match the number of criteria in the stored CriteriaConfig (3-7). The endpoint uses `range(n_criteria)` internally -- never hardcodes 5. `criteria_config` is loaded from the model bundle, never accepted in this body. Returns HTTP 400 if `bundle["approved"]` is not `True`. Each returned asset also includes `correlation_summary` (`composite_stress_index`, `top_correlated_pairs`, `sensors_degrading_together`), `breaches` (list), and `breach_summary` (counts + `alert_required`).
+`weights` length must match the number of criteria in the stored CriteriaConfig (3-7). The endpoint uses `range(n_criteria)` internally -- never hardcodes 5. `criteria_config` is loaded from the model bundle, never accepted in this body. Returns HTTP 400 if `bundle["approved"]` is not `True`. Each returned asset also includes `correlation_summary` (`composite_stress_index`, `top_correlated_pairs`, `sensors_degrading_together`), `breaches` (list), `breach_summary` (counts + `alert_required`), and `mtbf`/`mtbm`/`replace_vs_maintain` (see Upload Pipeline > Maintenance Planning).
 
 POST /upload/explain body:
 ```json
@@ -1022,8 +1068,11 @@ Only breaches with `severity` in `("high", "medium")` produce an alert (see On-D
 
 GET /rag/documents response:
 ```json
-{"manuals": ["ksb_manual.pdf"], "failure_cases": ["pump_20260630.md"], "criteria_configs": ["ksb_calio.json"]}
+{"manuals": ["ksb_manual.pdf"], "failure_cases": ["pump_20260630.md"],
+ "criteria_configs": ["KSB_Calio_Pump_20260705_120000.json", "KSB_Calio_Pump_20260701_100000.json"],
+ "latest_per_asset_type": {"KSB Calio Pump": "KSB_Calio_Pump_20260705_120000.json"}}
 ```
+`criteria_configs` is sorted newest-first by the timestamp embedded in each filename (see Upload Pipeline > Versioned CriteriaConfig Storage). `latest_per_asset_type` maps each config's actual `asset_type` JSON field to its newest filename.
 
 DELETE /rag/document body:
 ```json
@@ -1036,96 +1085,83 @@ Delete triggers `build_knowledge_base(force_rebuild=True)` to purge stale embedd
 
 ## Frontend Architecture
 
+`Dashboard.jsx` renders a single view -- there is no mode toggle and no default-fleet state. It owns one `useUpload` instance plus a small amount of local UI state; everything else default-fleet-related (`ahpResult`, `manualScores`, `assets`, `rulPredictions`, `rulExplanations`, `useRiskScores`, `useRUL`, and their imports) was removed from the component entirely -- see Two Backend Modes, One Rendered Dashboard.
+
 ### State in Dashboard.jsx
 
-**Default mode state:**
-```javascript
-ahpResult:       { weights, cr, valid }
-manualScores:    { c1: 7, c4: 6 }
-assets:          current pump list with risk scores
-rulPredictions:  keyed by asset_id
-rulExplanations: keyed by asset_id
-```
-
-**Uploaded mode state (owned by the `useUpload` hook, lifted into Dashboard.jsx):**
+**All state is uploaded-mode state (owned by the `useUpload` hook, lifted into Dashboard.jsx):**
 ```javascript
 criteriaConfig:          null   // Claude's draft, from /upload/analyze -- passed only to UploadPanel
 criteriaApproved:        false  // flips true after /upload/approve-criteria succeeds
 approvedCriteriaConfig:  null   // the SME-approved config returned by approve-criteria
 approvalChanges:         0      // per-field diff count vs. the draft
-predictedAssets:         []     // includes correlation_summary, breaches, breach_summary per asset
+predictedAssets:         []     // includes correlation_summary, breaches, breach_summary,
+                                 // mtbf, mtbm, replace_vs_maintain per asset
 uploadedExplanations:    {}     // keyed by asset_id
 uploadedBreachAlerts:    {}     // keyed by asset_id, from /upload/explain-breach
+uploadedAhpResult:       null   // { weights, cr, valid } from AHPMatrix's onWeightsUpdate
 ```
 Dashboard computes `activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig` and passes that (not the raw draft) to `AHPMatrix` and `DynamicAssetTable` -- everything downstream of approval sees the SME-approved version. `UploadPanel` alone still receives the raw `criteriaConfig` draft, since its own review screen needs the original for the "Reset to Claude's Suggestions" button.
 
-Mode toggle: `"default" | "uploaded"` -- pill-style toggle at top of dashboard.
-
 ### Dynamic Behavior
 
-When AHP matrix changes:
-  weights recalculate -> CR validates -> risk scores update ->
-  RUL predictions update (if CR valid) -> history log appends
-
-When C1 or C4 manual scores change:
-  GET /ahp/assets called with new c1_score/c4_score ->
-  all risk scores update -> RUL predictions update ->
-  history log appends noting manual override
-
-When file uploaded and analyzed (uploaded mode):
+When file uploaded and analyzed:
   criteriaConfig set (draft) -> uploadedAssets populated with scores (no RUL yet) ->
   criteriaApproved reset to false, approvedCriteriaConfig reset to null
 
-When criteria are approved (uploaded mode):
+When criteria are approved:
   POST /upload/approve-criteria -> criteriaApproved = true, approvedCriteriaConfig set,
   approvalChanges set -> Run Risk and RUL Analysis button unlocks (still requires ahpValid too)
 
-When predict-all runs (uploaded mode):
+When predict-all runs:
   blocked client-side unless criteriaApproved -> predictedAssets set with RUL values in years
-  (converted to days at display layer), each asset carrying correlation_summary + breaches + breach_summary
+  (converted to days at display layer), each asset carrying correlation_summary + breaches +
+  breach_summary + mtbf + mtbm + replace_vs_maintain
 
-When explain requested (uploaded mode):
+When explain requested:
   uploadedExplanations updated for that asset_id with sensor_context from the approved CriteriaConfig
 
-When breach alerts requested (uploaded mode):
+When breach alerts requested:
   POST /upload/explain-breach -> uploadedBreachAlerts updated for that asset_id;
   button is disabled up front when breach_summary.alert_required is false
 
-### Uploaded Mode Layout (top to bottom)
+### Dashboard Layout (top to bottom)
 
 1. AHPMatrix (only rendered after a criteria config -- draft or approved -- is available)
 2. UploadPanel (file drop zone + Review & Approve Criteria screen + predict button, gated on approval)
-3. KnowledgeBasePanel (collapsible; shows manuals/failure cases/configs; PDF upload)
+3. KnowledgeBasePanel (collapsible; manuals/failure cases/criteria configs + Approval Audit Log)
 4. DynamicAssetTable (only rendered when predictedAssets.length > 0; includes breach status
-   column, high-severity banner, and per-asset Explain / Breach Alerts popups)
+   column, MTBF/PM Interval columns, high-severity banner, and per-asset Explain / Breach Alerts popups)
 
 ### Component Inventory
 
-| Component | File | Mode | Purpose |
+| Component | File | Rendered by Dashboard.jsx? | Purpose |
 |---|---|---|---|
-| AHPMatrix | AHPMatrix.jsx | both | NxN pairwise matrix with CR validation (5x5 in default mode; NxN in uploaded mode where N = criteria count from CriteriaConfig, 3-7) |
-| ManualScoreInputs | ManualScoreInputs.jsx | both | C1/C4 manual inputs (labels from config in uploaded mode) |
-| DataUpload | DataUpload.jsx | not rendered | CSV/JSON upload for KSB pump data (component exists but removed from default layout) |
-| WeightDisplay | WeightDisplay.jsx | default | Recharts bar chart of criterion weights |
-| AssetRegistry | AssetRegistry.jsx | default | Pump table with expandable detail rows |
-| RiskRanking | RiskRanking.jsx | default | Ranked risk table + color-coded bar chart |
-| CriteriaContribution | CriteriaContribution.jsx | default | Stacked bar of weighted criterion contributions |
-| RiskScatterPlot | RiskScatterPlot.jsx | default | Risk vs Condition scatter with quadrants |
-| RULDisplay | RULDisplay.jsx | default | RUL progress bars in months + CI |
-| RULExplanation | RULExplanation.jsx | default | Claude explanation cards per pump |
-| UploadPanel | UploadPanel.jsx | uploaded | File drop zone + Review & Approve Criteria screen (editable names/thresholds/penalties/default scores, Reset + Approve, locks on approval) + predict button gated on `criteriaApproved` |
-| KnowledgeBasePanel | KnowledgeBasePanel.jsx | uploaded | Collapsible RAG document manager: PDF upload, list, delete; uses useKnowledgeBase internally |
-| DynamicAssetTable | DynamicAssetTable.jsx | uploaded | Dynamic risk ranking + RUL table with breach status column, high-severity banner, and Explain / Breach Alerts popups (Multi-Sensor Analysis + breach metrics) |
+| AHPMatrix | AHPMatrix.jsx | Yes | NxN pairwise matrix with CR validation, N = criteria count from CriteriaConfig (3-7) |
+| UploadPanel | UploadPanel.jsx | Yes | File drop zone + Review & Approve Criteria screen (editable names/thresholds/penalties/default scores, Reset + Approve, locks on approval) + predict button gated on `criteriaApproved` |
+| KnowledgeBasePanel | KnowledgeBasePanel.jsx | Yes | Collapsible RAG document manager (manuals/failure cases/criteria configs) + Approval Audit Log viewer; uses `useKnowledgeBase` internally |
+| DynamicAssetTable | DynamicAssetTable.jsx | Yes | Risk ranking + RUL + MTBF/PM Interval columns + breach status column, high-severity banner, and Explain / Breach Alerts popups (Multi-Sensor Analysis + Maintenance Planning + breach metrics) |
+| ManualScoreInputs | ManualScoreInputs.jsx | No (orphaned) | C1/C4 manual inputs component; uploaded mode edits `default_score` inline inside UploadPanel's review cards instead |
+| DataUpload | DataUpload.jsx | No (orphaned) | CSV/JSON upload for KSB pump data |
+| WeightDisplay | WeightDisplay.jsx | No (orphaned) | Recharts bar chart of criterion weights (default fleet) |
+| AssetRegistry | AssetRegistry.jsx | No (orphaned) | Pump table with expandable detail rows (default fleet) |
+| RiskRanking | RiskRanking.jsx | No (orphaned) | Ranked risk table + color-coded bar chart (default fleet) |
+| CriteriaContribution | CriteriaContribution.jsx | No (orphaned) | Stacked bar of weighted criterion contributions (default fleet) |
+| RiskScatterPlot | RiskScatterPlot.jsx | No (orphaned) | Risk vs Condition scatter with quadrants (default fleet) |
+| RULDisplay | RULDisplay.jsx | No (orphaned) | RUL progress bars in months + CI (default fleet) |
+| RULExplanation | RULExplanation.jsx | No (orphaned) | Claude explanation cards per pump (default fleet) |
+
+"Orphaned" components/hooks are kept on disk deliberately (never delete component or hook files) -- they are simply not imported by `Dashboard.jsx` anymore. The default fleet's backend endpoints they used to call remain fully functional for direct API use.
 
 ### Hook Inventory
 
-| Hook | File | State Managed |
-|---|---|---|
-| useAHP | useAHP.js | AHP matrix calculation API calls |
-| useRiskScores | useRiskScores.js | GET /ahp/assets with current weights |
-| useRUL | useRUL.js | Auto-predict + on-demand explain (default fleet) |
-| useUpload | useUpload.js | Upload flow state: analyze, criteria approval (`criteriaApproved`, `approvedCriteriaConfig`, `approvalChanges`, `approveCriteria()`), predict-all (gated on approval), explain, explain-breach |
-| useKnowledgeBase | useKnowledgeBase.js | RAG document lists, upload/delete status; owned by KnowledgeBasePanel |
+| Hook | File | Used by Dashboard.jsx? | State Managed |
+|---|---|---|---|
+| useAHP | useAHP.js | Indirectly (via AHPMatrix) | AHP matrix calculation API calls |
+| useUpload | useUpload.js | Yes | Upload flow state: analyze, criteria approval (`criteriaApproved`, `approvedCriteriaConfig`, `approvalChanges`, `approveCriteria()`), predict-all (gated on approval), explain, explain-breach |
+| useKnowledgeBase | useKnowledgeBase.js | Yes (via KnowledgeBasePanel) | RAG document lists, upload/delete status, audit log fetch (`auditLog`, `auditLogStatus`, `fetchAuditLog()`) |
+| useRiskScores | useRiskScores.js | No (orphaned) | GET /ahp/assets with current weights (default fleet) |
+| useRUL | useRUL.js | No (orphaned) | Auto-predict + on-demand explain (default fleet) |
 
 ### Data Upload Schema (dataParser.js)
 
@@ -1206,6 +1242,12 @@ API_BASE_URL=http://localhost:8000
 | `threshold_breach_detector.py` is pure deterministic math, no API call | Breach detection must run on every scoring cycle without Anthropic cost or latency |
 | `breach_explainer.py` is only called on demand (Breach Alerts button), and skips low-severity breaches | Claude explanations are expensive; only medium/high severity warrants one |
 | Multi-sensor trend/correlation/breach features computed identically in `dynamic_aggregator.py`/`dynamic_train.py` and at inference | Prevents train/inference feature skew; all new features append to the end of the vector, never reorder existing positions |
+| `store_criteria_config()` never overwrites an existing file -- always writes a new `{asset_type}_{timestamp}.json` | Preserves the full inference history per asset type, not just the latest |
+| Every `POST /upload/approve-criteria` call is logged to `docs/audit_log.jsonl` via `rag/audit_log.py` | Auditable record of exactly what Claude suggested vs. what the human approved |
+| `log_approval()` never raises -- logs a warning and returns `""` on failure | Audit logging must never block the approval it's recording |
+| `mtbf_mtbm.py` is pure deterministic math, no API call | MTBF/MTBM/replace-vs-maintain must run on every scoring cycle without Anthropic cost or latency |
+| MTBF/MTBM are simplified heuristic approximations, not full Weibull models | Explicitly scoped as such; do not add statistical reliability modeling without being asked |
+| `Dashboard.jsx` renders only the uploaded asset mode; default-fleet components/hooks are kept on disk but not imported | Default fleet backend endpoints remain available for direct API use by the AI team |
 
 ---
 
@@ -1221,6 +1263,8 @@ API_BASE_URL=http://localhost:8000
 - RUL displayed in **days** in the UI (Math.round(rul_years * 365)), backend always returns years
 - RUL color thresholds: green > 365 days, yellow 180-365 days, red < 180 days
 - Progress bar max = 7300 days (20 years * 365)
+- Test RMSE displayed in **days** in UploadPanel's training summary (Math.round(test_rmse * 365)), same day-conversion convention as RUL; backend (`dynamic_train.py`) always returns years
+- Composite Stress Index is clamped to [0, 1] at the display layer (`Math.min(1, Math.max(0, value))`) before both the progress bar width and the text label -- the raw computed value can exceed 1
 
 ---
 
@@ -1229,7 +1273,7 @@ API_BASE_URL=http://localhost:8000
 ```
 Backend:  uvicorn main:app --reload  ->  http://localhost:8000
 Frontend: cd frontend && npm run dev ->  http://localhost:5173
-Vite proxies /ahp/*, /rul/*, and /upload/* to http://localhost:8000
+Vite proxies /ahp/*, /rul/*, /upload/*, and /rag/* to http://localhost:8000
 ```
 
 Prerequisites before starting backend:

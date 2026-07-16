@@ -8,9 +8,11 @@
 
 The dashboard scores industrial assets using the Analytic Hierarchy Process (AHP) -- a structured method for multi-criteria risk ranking -- and predicts remaining useful life using a trained XGBoost model. Risk scores and RUL predictions update dynamically as the user adjusts the AHP pairwise comparison matrix. A GenAI explanation layer (Claude, via the Anthropic API) generates plain-English maintenance recommendations for each asset on demand, enriched by a RAG (Retrieval-Augmented Generation) knowledge pipeline that retrieves relevant engineering standards, past failure cases, and prior asset configurations.
 
-The dashboard operates in two modes. The default mode loads a pre-configured fleet of 5 KSB Calio 30-40 centrifugal pump assets from operational telemetry provided by the client. The upload mode accepts any asset type -- the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria and scoring thresholds for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data. Claude's inferred criteria are always a draft: a human reviews and approves (or edits) them in the dashboard before they can drive any scoring or prediction.
+The backend supports two modes. A default fleet mode loads a pre-configured fleet of 5 KSB Calio 30-40 centrifugal pump assets from operational telemetry provided by the client, exposed via the `/ahp` and `/rul` API routes. **The dashboard UI currently renders only the second mode, uploaded asset mode** -- the default fleet endpoints remain fully functional for direct API use, but there is no toggle or view for them in the dashboard itself.
 
-The RUL model for uploaded assets also looks beyond single-sensor thresholds: it tracks trend direction and cross-sensor correlation over a rolling window, and separately runs deterministic threshold-breach detection on every scoring pass, with Claude only invoked on demand to explain a breach that has already been found.
+In uploaded asset mode, the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria and scoring thresholds for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data. Claude's inferred criteria are always a draft: a human reviews and approves (or edits) them in the dashboard before they can drive any scoring or prediction, and every approval is recorded in an audit trail showing exactly what changed from Claude's suggestion.
+
+The RUL model for uploaded assets also looks beyond single-sensor thresholds: it tracks trend direction and cross-sensor correlation over a rolling window, and separately runs deterministic threshold-breach detection on every scoring pass, with Claude only invoked on demand to explain a breach that has already been found. It also produces simplified MTBF (mean time between failures) and MTBM (recommended maintenance interval) estimates, plus a basic replace-vs-maintain economic comparison -- all deterministic approximations, not full statistical reliability models.
 
 Built as an internship project for Agelix Consulting to extend their asset lifecycle management platform, Assets Maestro. The default asset class is the KSB Calio 30-40 glandless circulator pump.
 
@@ -25,7 +27,7 @@ Built as an internship project for Agelix Consulting to extend their asset lifec
 | ML Model | XGBoost, scikit-learn, joblib |
 | GenAI Layer | Anthropic API (claude-sonnet-4-6) |
 | Schema Inference | Anthropic API (claude-sonnet-4-6) |
-| RAG Pipeline | ChromaDB, SentenceTransformers, LangChain |
+| RAG Pipeline | ChromaDB (onnxruntime default embeddings), LangChain |
 | API Layer | FastAPI, Uvicorn |
 | Frontend | React, Recharts |
 | Testing | pytest |
@@ -133,7 +135,7 @@ Runs at `http://localhost:5173`. Vite proxies `/ahp/*`, `/rul/*`, `/upload/*`, a
 
 The user fills a pairwise comparison matrix in the dashboard, following Saaty's 1-9 scale. The engine derives a weight vector from the matrix and validates consistency using the Consistency Ratio (CR). A CR above 0.10 indicates an inconsistent matrix -- the dashboard surfaces a warning and blocks RUL predictions until the matrix is corrected.
 
-In default fleet mode the matrix is always 5x5 (five fixed criteria). In upload mode the matrix is NxN where N is the number of criteria inferred by Claude for the uploaded asset type (3--7). Each asset is scored on a 1-10 internal scale, converted to the 1-9 Saaty scale. The overall risk factor is the dot product of the weight vector and score vector, producing a score from 1 to 9 per asset. Higher scores indicate higher risk.
+In default fleet mode the matrix is always 5x5 (five fixed criteria); in upload mode -- the dashboard's only rendered view -- the matrix is NxN where N is the number of criteria inferred by Claude for the uploaded asset type (3--7). Each asset is scored on a 1-10 internal scale, converted to the 1-9 Saaty scale. The overall risk factor is the dot product of the weight vector and score vector, producing a score from 1 to 9 per asset. Higher scores indicate higher risk.
 
 In the default fleet mode, three criteria are derived automatically from sensor telemetry and two are manual inputs with defaults based on the KSB Calio operational context. In upload mode, no criteria are hardcoded -- the Anthropic API analyzes the uploaded data, infers appropriate criteria names and scoring thresholds for the detected asset type, and stores them in a CriteriaConfig that drives the entire scoring pipeline.
 
@@ -151,11 +153,19 @@ When a user uploads an Excel file (two sheets: Operational Telemetry and Failure
 2. Queries the RAG knowledge base for relevant engineering standards, similar past CriteriaConfigs, and known failure cases.
 3. Calls the Anthropic API to infer 3-7 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges, enriched by retrieved domain knowledge. This is a **draft** -- it is stored provisionally but not yet trusted.
 4. Trains a fresh XGBoost model on the uploaded dataset (the model bundle is saved as unapproved).
-5. **The user reviews and approves the criteria** in the dashboard: criterion names, manual-input default scores, and threshold/penalty values are all editable (sensor column assignments are not, since changing them would invalidate the trained model). Approving locks the bundle and re-stores the SME-approved CriteriaConfig in the knowledge base for future retrieval -- Claude's original draft is not what gets remembered.
+5. **The user reviews and approves the criteria** in the dashboard: criterion names, manual-input default scores, and threshold/penalty values are all editable (sensor column assignments are not, since changing them would invalidate the trained model). Approving locks the bundle and re-stores the SME-approved CriteriaConfig in the knowledge base as a new, versioned file for future retrieval -- Claude's original draft is never overwritten, and every approval (with a before/after diff of exactly what the SME changed) is appended to an audit log.
 6. Auto-generates a failure case document recording the asset type, sensors, failure modes, criteria, and training metrics.
-7. Scores each asset, runs deterministic threshold-breach detection, and predicts RUL using the user's AHP matrix. Predictions are only available once the criteria have been approved.
+7. Scores each asset, runs deterministic threshold-breach detection, computes MTBF/MTBM/replace-vs-maintain estimates, and predicts RUL using the user's AHP matrix. Predictions are only available once the criteria have been approved.
 
 All column name references flow through a central resolver module (`data/column_resolver.py`) -- no part of the pipeline hardcodes column names.
+
+### Approval Audit Trail
+
+Every criteria approval is logged to `docs/audit_log.jsonl` (`rag/audit_log.py`) -- an append-only, one-line-per-approval record of the file uploaded, the asset type, the exact CriteriaConfig filename that was saved, a count of how many fields the SME changed, and a full field-by-field diff (criterion, field, Claude's original value, the approved value). This never blocks an approval -- if logging fails for any reason it's silently skipped. The dashboard's Knowledge Base panel has an "Approval Audit Log" section that lists every approval (timestamp, asset type, file, changes made) and lets you expand any row to see the full diff.
+
+### Versioned CriteriaConfig Storage
+
+Every successful schema inference and every approval saves a **new** CriteriaConfig file -- `{asset_type}_{timestamp}.json` -- rather than overwriting the previous one, so the full history of inferred and approved configs per asset type is preserved on disk and searchable in the RAG knowledge base. The Knowledge Base panel's document listing shows every version, sorted newest-first, and separately surfaces just the latest config for each distinct asset type.
 
 ### Multi-Sensor Correlation and Threshold Breach Detection
 
@@ -167,6 +177,16 @@ For uploaded assets, the RUL feature set goes beyond single-sensor rolling stati
 
 Both feed the RUL model as additional features and surface in the dashboard: a Multi-Sensor Analysis panel in the asset explanation popup, and a per-asset breach status column with an on-demand "Breach Alerts" button. Claude is only called to generate breach alert text for medium/high severity breaches, and only when the user asks for it -- never automatically during scoring.
 
+### Maintenance Planning (MTBF, MTBM, Replace vs. Maintain)
+
+For uploaded assets, every scoring pass also computes three simplified, deterministic approximations (no API calls, and explicitly not full Weibull statistical reliability models):
+
+- **Estimated MTBF** (mean time between failures) -- derived from the asset's observed failure count and total runtime, with a confidence label (low/medium/high) based on how many failures were actually observed.
+- **Recommended maintenance interval (MTBM)** -- a risk-adjusted fraction of the estimated MTBF, compared against the asset's current interval to recommend shortening, extending, or maintaining it, plus a suggested next maintenance date.
+- **Replace vs. maintain** -- a basic amortized-cost comparison between ongoing maintenance spend and an estimated (or uploaded) replacement cost.
+
+These appear in the dashboard as a "Maintenance Planning" section of the asset explanation popup (three cards plus a highlighted next-maintenance date) and as two extra columns, "Est. MTBF" and "PM Interval", in the risk ranking table.
+
 ### GenAI Explanations
 
 On demand, the dashboard calls the Anthropic API to generate a 3-4 sentence plain-English explanation for each asset's RUL prediction. The explanation names the biggest AHP risk drivers given the current weights, highlights the key telemetry signals, and recommends a specific maintenance action. For uploaded assets, the explanation adapts to the inferred asset type and failure modes, and is enriched with retrieved failure precedents and maintenance guidance from the RAG knowledge base when available.
@@ -175,11 +195,11 @@ On demand, the dashboard calls the Anthropic API to generate a 3-4 sentence plai
 
 The RAG system enriches Claude's prompts with retrieved domain knowledge. It is entirely optional -- when the knowledge base is missing or empty, the system behaves identically to before.
 
-Three document types are ingested into a ChromaDB vector store using SentenceTransformer (`all-MiniLM-L6-v2`) embeddings:
+Three document types are ingested into a ChromaDB vector store using ChromaDB's built-in `DefaultEmbeddingFunction` (onnxruntime-based, ~50 MB). An earlier version used SentenceTransformer (`all-MiniLM-L6-v2`, PyTorch, ~3 GB) -- that has been replaced to keep the Docker image size reasonable; don't reintroduce `sentence-transformers`.
 
 - **PDF manuals** (`docs/manuals/`) -- engineering standards and operating limits, chunked at 500 characters.
 - **Failure case markdown** (`docs/failure_cases/`) -- auto-generated after each successful upload training run (asset type, sensors, failure modes, criteria, training RMSE), chunked at 300 characters. Manual failure case files can also be added.
-- **CriteriaConfigs** (`rag/stored_configs/`) -- saved as JSON after each successful schema inference, indexed as whole documents.
+- **CriteriaConfigs** (`rag/stored_configs/`) -- saved as versioned JSON (one new file per schema inference and per approval -- never overwritten), indexed as whole documents.
 
 The retriever makes targeted queries per use case:
 - **Schema inference**: retrieves engineering standards, similar past configs, and failure cases, injected as a RETRIEVED DOMAIN KNOWLEDGE block in the inference prompt.
@@ -222,6 +242,7 @@ GET `/ahp/assets` accepts query params: `weights` (repeated float), `c1_score` (
 | POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets (400 if not yet approved) |
 | POST | `/upload/explain` | Asset + AHP + RUL + asset type -> Claude explanation (includes multi-sensor correlation summary) |
 | POST | `/upload/explain-breach` | Asset + detected breaches -> on-demand Claude alerts for medium/high severity breaches |
+| GET | `/upload/audit-log` | Full approval audit trail -- every draft-vs-approved diff across all uploads |
 
 ### `/rag` -- RAG Knowledge Base Management
 
@@ -230,6 +251,8 @@ GET `/ahp/assets` accepts query params: `weights` (repeated float), `c1_score` (
 | POST | `/rag/upload-document` | Upload a PDF manual, save to `docs/manuals/`, ingest into vector store |
 | GET | `/rag/documents` | List all ingested documents across manuals, failure cases, and criteria configs |
 | DELETE | `/rag/document` | Delete a document by filename and type, rebuild the vector store |
+
+`GET /rag/documents` sorts `criteria_configs` newest-first by the timestamp embedded in each versioned filename, and also returns `latest_per_asset_type`, mapping each distinct asset type to its most recently saved config file.
 
 `DELETE /rag/document` accepts a JSON body: `{"filename": str, "doc_type": "manual"|"failure_case"|"criteria_config"}`.
 
@@ -307,6 +330,7 @@ agelix-consulting-project-2026/
 |   +-- train.py                   # Trains default fleet model -> model.pkl
 |   +-- rul_explainer.py           # Anthropic API explanation (+ correlation summary)
 |   +-- breach_explainer.py        # On-demand Anthropic API breach alerts
+|   +-- mtbf_mtbm.py               # Deterministic MTBF/MTBM/replace-vs-maintain estimates
 |   +-- dynamic_*.py               # Dynamic equivalents for uploaded assets
 |   +-- api.py                     # /rul/* endpoints
 +-- data/
@@ -321,20 +345,24 @@ agelix-consulting-project-2026/
 |   |                              # explain, explain-breach; wires RAG retrieval)
 +-- rag/
 |   +-- document_loader.py         # Loads + chunks PDFs, markdown, JSON configs
-|   +-- knowledge_base.py          # ChromaDB vector store (SentenceTransformer embeddings)
+|   +-- knowledge_base.py          # ChromaDB vector store (onnxruntime default embeddings)
 |   +-- retriever.py               # RAG retrieval entry point for all use cases
+|   +-- audit_log.py               # Writes/reads docs/audit_log.jsonl (approval diffs)
 |   +-- ingest.py                  # CLI: python -m rag.ingest [--rebuild]
 |   +-- api.py                     # /rag/* endpoints (upload, list, delete documents)
-|   +-- stored_configs/            # Saved CriteriaConfig JSON files (auto-populated)
+|   +-- stored_configs/            # Saved CriteriaConfig JSON files, versioned per approval
 |   +-- chroma_db/                 # ChromaDB persistent store (auto-generated)
 +-- docs/
 |   +-- manuals/                   # PDF manuals for RAG ingestion (uploadable via UI)
 |   +-- failure_cases/             # Auto-generated + manual failure case markdown
+|   +-- audit_log.jsonl            # Append-only approval audit trail (auto-created)
 +-- frontend/src/
-|   +-- components/                # React components (incl. KnowledgeBasePanel)
-|   +-- hooks/                     # useAHP, useRUL, useUpload, useKnowledgeBase
+|   +-- components/                # React components; Dashboard.jsx renders only uploaded-asset mode
+|   +-- hooks/                     # useAHP (via AHPMatrix), useUpload, useKnowledgeBase
 +-- tests/
 ```
+
+Note: `frontend/src/components/` and `hooks/` also still contain the default-fleet-only components (`WeightDisplay`, `AssetRegistry`, `RiskRanking`, `CriteriaContribution`, `RiskScatterPlot`, `RULDisplay`, `RULExplanation`, `ManualScoreInputs`, `DataUpload`) and hooks (`useRiskScores`, `useRUL`) -- these are kept on disk intentionally but are no longer imported by `Dashboard.jsx`.
 
 ---
 
