@@ -1,4 +1,11 @@
-frontend/
+frontend/node_modules/
+frontend/.vite/
+frontend/src/
+frontend/public/
+frontend/vite.config.js
+frontend/package.json
+frontend/package-lock.json
+frontend/index.html
 __pycache__/
 *.pyc
 .env
