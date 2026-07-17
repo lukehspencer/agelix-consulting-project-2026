@@ -1,0 +1,9 @@
+[build]
+builder = "nixpacks"
+buildCommand = "pip install -r requirements.txt && cd frontend && npm install && npm run build && cd .. && python data/generate_maintenance_log.py && python -m rul.train"
+
+[deploy]
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/docs"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"

@@ -384,3 +384,30 @@ python -m pytest tests/
 ```
 
 The upload pipeline tests mock all Anthropic API calls -- no API key is required to run the test suite.
+
+---
+
+## Deployment
+
+The app deploys to Railway as a single service serving both the 
+FastAPI backend and React frontend.
+
+### Steps
+1. Push code to GitHub — Railway auto-deploys on every push to main
+2. Set environment variables in Railway dashboard:
+   - ANTHROPIC_API_KEY — your Anthropic API key
+   - VITE_API_BASE_URL — leave empty
+3. First deploy takes 5-10 minutes (installs deps, builds frontend, 
+   trains RUL model)
+4. Subsequent deploys take 2-3 minutes
+
+### Redeploying after changes
+git push origin main
+
+Railway detects the push and redeploys automatically. The public 
+URL stays the same.
+
+### Note on persistent data
+The RAG knowledge base and dynamic model are rebuilt on each deploy. 
+To persist uploaded assets and knowledge base documents across 
+deploys, configure a Railway volume.

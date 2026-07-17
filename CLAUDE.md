@@ -1293,3 +1293,32 @@ python -m pytest tests/
 The dynamic model (`rul/dynamic_model.pkl`) is not run at startup. It is trained automatically when a file is uploaded via the dashboard's uploaded asset mode.
 
 The RAG knowledge base (`rag/chroma_db/`) is optional. If not built, the upload pipeline and explainer work identically to before -- RAG retrieval returns `retrieval_available=False` and no context is injected. To populate it, place PDF manuals in `docs/manuals/` and/or failure case markdown in `docs/failure_cases/`, then run `python -m rag.ingest`. Use `--rebuild` to force a full rebuild. CriteriaConfigs are stored automatically in `rag/stored_configs/` after each successful upload analysis.
+
+---
+
+## Deployment
+
+The app is deployed on Railway as a single service. FastAPI serves 
+both the API and the built React frontend.
+
+Build and start command are configured in railway.toml:
+- Build: installs Python deps, builds React frontend, generates 
+  telemetry data, trains RUL model
+- Start: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+Required environment variables on Railway:
+  ANTHROPIC_API_KEY — Anthropic API key
+  VITE_API_BASE_URL — leave empty in production
+
+To redeploy after making changes:
+  git push origin main
+Railway auto-detects the push and redeploys automatically.
+
+Frontend is built to frontend/dist/ and served from FastAPI via 
+StaticFiles mount in main.py. In production all API requests use 
+relative paths (no VITE_API_BASE_URL needed).
+
+The dynamic model (rul/dynamic_model.pkl) and RAG knowledge base 
+(rag/chroma_db/) are regenerated on each deploy via the build 
+command. To persist them across deploys, add a Railway volume 
+mounted at /app/rul and /app/rag.

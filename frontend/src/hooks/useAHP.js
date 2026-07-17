@@ -1,5 +1,7 @@
 import { useState } from 'react'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+
 export function useAHP() {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -9,7 +11,7 @@ export function useAHP() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('/ahp/calculate-weights', {
+      const res = await fetch(`${API_BASE}/ahp/calculate-weights`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ matrix }),

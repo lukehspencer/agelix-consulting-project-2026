@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+
 export default function useUpload() {
   const [uploadStatus, setUploadStatus] = useState('idle')
   const [criteriaConfig, setCriteriaConfig] = useState(null)
@@ -27,7 +29,7 @@ export default function useUpload() {
     try {
       setUploadStatus('analyzing')
 
-      const res = await fetch('/upload/analyze', {
+      const res = await fetch(`${API_BASE}/upload/analyze`, {
         method: 'POST',
         body: formData,
       })
@@ -61,7 +63,7 @@ export default function useUpload() {
     setErrorMessage(null)
 
     try {
-      const res = await fetch('/upload/approve-criteria', {
+      const res = await fetch(`${API_BASE}/upload/approve-criteria`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -116,7 +118,7 @@ export default function useUpload() {
       }
       console.log('[useUpload] predictAll: POST /upload/predict-all body =', JSON.stringify(body))
 
-      const res = await fetch('/upload/predict-all', {
+      const res = await fetch(`${API_BASE}/upload/predict-all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -186,7 +188,7 @@ export default function useUpload() {
     }
 
     try {
-      const res = await fetch('/upload/explain', {
+      const res = await fetch(`${API_BASE}/upload/explain`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -217,7 +219,7 @@ export default function useUpload() {
     }
 
     try {
-      const res = await fetch('/upload/explain-breach', {
+      const res = await fetch(`${API_BASE}/upload/explain-breach`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

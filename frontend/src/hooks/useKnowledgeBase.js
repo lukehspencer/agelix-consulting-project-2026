@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+
 export default function useKnowledgeBase() {
   const [documents, setDocuments] = useState({ manuals: [], failure_cases: [], criteria_configs: [] })
   const [uploadStatus, setUploadStatus] = useState('idle')
@@ -10,7 +12,7 @@ export default function useKnowledgeBase() {
   const fetchAuditLog = useCallback(async () => {
     setAuditLogStatus('loading')
     try {
-      const res = await fetch('/upload/audit-log')
+      const res = await fetch(`${API_BASE}/upload/audit-log`)
       if (!res.ok) throw new Error(`Server error ${res.status}`)
       const data = await res.json()
       setAuditLog(data.entries ?? [])
@@ -23,7 +25,7 @@ export default function useKnowledgeBase() {
 
   const fetchDocuments = useCallback(async () => {
     try {
-      const res = await fetch('/rag/documents')
+      const res = await fetch(`${API_BASE}/rag/documents`)
       if (!res.ok) throw new Error(`Server error ${res.status}`)
       const data = await res.json()
       setDocuments(data)
@@ -39,7 +41,7 @@ export default function useKnowledgeBase() {
     form.append('file', file)
     try {
       setUploadStatus('ingesting')
-      const res = await fetch('/rag/upload-document', { method: 'POST', body: form })
+      const res = await fetch(`${API_BASE}/rag/upload-document`, { method: 'POST', body: form })
       if (!res.ok) {
         const detail = await res.json().catch(() => ({}))
         throw new Error(detail?.detail ?? `Upload failed (${res.status})`)
@@ -55,7 +57,7 @@ export default function useKnowledgeBase() {
   const deleteDocument = useCallback(async (filename, doc_type) => {
     setErrorMessage(null)
     try {
-      const res = await fetch('/rag/document', {
+      const res = await fetch(`${API_BASE}/rag/document`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename, doc_type }),

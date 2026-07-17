@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+
 export function useRUL(weights, cr, assets) {
   const [rulPredictions, setRulPredictions] = useState({})
   const [rulExplanations, setRulExplanations] = useState({})
@@ -31,7 +33,7 @@ export function useRUL(weights, cr, assets) {
       const results = {}
 
       await Promise.all(assets.map(async (asset) => {
-        const res = await fetch('/rul/predict', {
+        const res = await fetch(`${API_BASE}/rul/predict`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -77,7 +79,7 @@ export function useRUL(weights, cr, assets) {
     setIsLoadingExplanation(prev => ({ ...prev, [id]: true }))
 
     try {
-      const res = await fetch('/rul/explain', {
+      const res = await fetch(`${API_BASE}/rul/explain`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
