@@ -25,7 +25,6 @@ htmlcov/
 
 # ── Node / Vite ───────────────────────────────────────────────────────────────
 node_modules/
-frontend/dist/
 frontend/.vite/
 .vite/
 
