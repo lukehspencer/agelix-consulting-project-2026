@@ -22,6 +22,12 @@ function parseNumberInput(raw) {
   return raw === '' ? '' : Number(raw)
 }
 
+function pmConfidenceDot(confidence) {
+  if (confidence === 'high') return { color: '#16a34a', label: 'High' }
+  if (confidence === 'medium') return { color: '#ca8a04', label: 'Medium' }
+  return { color: '#6b7280', label: 'Low' }
+}
+
 function ThresholdEditor({ thresholds, disabled, onChange, onAdd, onDelete }) {
   const canDelete = thresholds.length > 2
 
@@ -213,13 +219,15 @@ function CriteriaReviewCard({
 export default function UploadPanel({
   uploadStatus,
   criteriaConfig,
+  approvedCriteriaConfig,
   trainingResult,
   errorMessage,
   isPredicting,
-  hasPredictions,
+  hasResults,
   criteriaApproved,
   approvalChanges,
   onApproveCriteria,
+  onEditCriteria,
   onAnalyze,
   onPredict,
   onReset,
@@ -232,11 +240,23 @@ export default function UploadPanel({
   const [isDragOver, setIsDragOver] = useState(false)
   const [editedCriteriaConfig, setEditedCriteriaConfig] = useState(null)
   const [isApproving, setIsApproving] = useState(false)
+  const [approvedPmInterval, setApprovedPmInterval] = useState(90)
   const fileRef = useRef(null)
 
+  // Re-seeds the editable draft every time we enter (or re-enter) the review
+  // screen: from Claude's draft on first analysis, or from the last approved
+  // config whenever "Edit Criteria" reopens this screen for a re-approval.
   useEffect(() => {
-    setEditedCriteriaConfig(criteriaConfig ? cloneConfig(criteriaConfig) : null)
-  }, [criteriaConfig])
+    if (!criteriaApproved) {
+      const base = approvedCriteriaConfig ?? criteriaConfig
+      setEditedCriteriaConfig(base ? cloneConfig(base) : null)
+      setApprovedPmInterval(
+        approvedCriteriaConfig?.approved_pm_interval_days
+        ?? base?.recommended_pm_interval_days
+        ?? 90
+      )
+    }
+  }, [criteriaApproved, approvedCriteriaConfig, criteriaConfig])
 
   function handleFileSelect(file) {
     if (file && file.name.endsWith('.xlsx')) {
@@ -331,14 +351,16 @@ export default function UploadPanel({
   async function handleApprove() {
     if (!editedCriteriaConfig) return
     setIsApproving(true)
-    await onApproveCriteria(editedCriteriaConfig)
+    await onApproveCriteria(editedCriteriaConfig, approvedPmInterval)
     setIsApproving(false)
   }
 
   async function handlePredict() {
     console.log('[UploadPanel] Run Risk & RUL Analysis clicked', { ahpValid, ahpWeights, ahpCr })
 
-    const activeConfig = editedCriteriaConfig ?? criteriaConfig
+    // Always run against the approved config, never against unsaved edits --
+    // this button is only shown once criteriaApproved is true.
+    const activeConfig = approvedCriteriaConfig
     const n = activeConfig?.criteria?.length ?? 5
     const weights = ahpWeights ?? Array(n).fill(+(1 / n).toFixed(6))
     const cr = ahpCr ?? 0.0
@@ -366,6 +388,7 @@ export default function UploadPanel({
   const isAnalyzing = uploadStatus === 'uploading' || uploadStatus === 'analyzing' || uploadStatus === 'training'
   const isReady = uploadStatus === 'ready'
   const isError = uploadStatus === 'error'
+  const pmConfidence = pmConfidenceDot(editedCriteriaConfig?.pm_interval_confidence)
 
   return (
     <section className="card upload-panel">
@@ -424,12 +447,14 @@ export default function UploadPanel({
         </div>
       )}
 
-      {/* Section 2: Review & Approve Criteria */}
-      {isReady && editedCriteriaConfig && (
+      {/* States 2-4: Review & Approve Criteria, then Run / Re-run Analysis */}
+      {isReady && !criteriaApproved && editedCriteriaConfig && (
         <div className="criteria-preview">
           <h3 className="criteria-preview-title">
-            Claude has inferred {editedCriteriaConfig.criteria.length} AHP criteria for{' '}
-            {editedCriteriaConfig.asset_type}. Review and adjust before approving.
+            {approvedCriteriaConfig
+              ? <>Editing the approved criteria for {editedCriteriaConfig.asset_type}. Adjust thresholds, names, or defaults, then re-approve to unlock analysis again.</>
+              : <>Claude has inferred {editedCriteriaConfig.criteria.length} AHP criteria for{' '}
+                  {editedCriteriaConfig.asset_type}. Review and adjust before approving.</>}
           </h3>
 
           {trainingResult && (
@@ -438,12 +463,74 @@ export default function UploadPanel({
             </div>
           )}
 
+          <div className="criteria-card criteria-review-card pm-interval-section" style={{ marginBottom: '0.75rem' }}>
+            <div className="criteria-card-header">
+              <span style={{ fontWeight: 700, fontSize: '0.88rem', color: '#1e293b', flex: 1 }}>
+                PM Interval
+              </span>
+              {editedCriteriaConfig.pm_interval_source === 'inferred_from_log' ? (
+                <span className="criteria-badge badge-auto">Inferred from Log</span>
+              ) : (
+                <span className="criteria-badge" style={{ background: '#f1f5f9', color: '#64748b' }}>
+                  Default
+                </span>
+              )}
+            </div>
+
+            <p className="criteria-card-desc" style={{ fontStyle: 'italic' }}>
+              Recommended number of days between preventive maintenance visits for this asset type.
+            </p>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.6rem' }}>
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: pmConfidence.color,
+                }}
+              />
+              <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                {pmConfidence.label} confidence
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <label style={{ fontSize: '0.82rem', color: '#475569', fontWeight: 600 }}>
+                Interval (days)
+              </label>
+              <input
+                type="number"
+                min={7}
+                max={730}
+                className="pm-interval-input"
+                value={approvedPmInterval}
+                disabled={isApproving}
+                onChange={e => setApprovedPmInterval(parseNumberInput(e.target.value))}
+                style={{
+                  width: '80px',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  padding: '6px 10px',
+                  fontSize: '14px',
+                  textAlign: 'center',
+                }}
+              />
+              <span style={{ fontSize: '0.82rem', color: '#475569' }}>days</span>
+            </div>
+
+            <p style={{ margin: '0.4rem 0 0', fontSize: '0.78rem', color: '#64748b' }}>
+              Claude suggests: {editedCriteriaConfig.recommended_pm_interval_days ?? 90} days
+            </p>
+          </div>
+
           <div className="criteria-cards">
             {editedCriteriaConfig.criteria.map(crit => (
               <CriteriaReviewCard
                 key={crit.id}
                 criterion={crit}
-                disabled={criteriaApproved}
+                disabled={isApproving}
                 onNameChange={v => handleNameChange(crit.id, v)}
                 onUiLabelChange={v => handleUiLabelChange(crit.id, v)}
                 onDefaultScoreChange={v => handleDefaultScoreChange(crit.id, v)}
@@ -465,35 +552,52 @@ export default function UploadPanel({
             <button
               className="btn-reset"
               onClick={handleResetCriteria}
-              disabled={criteriaApproved || isApproving}
+              disabled={isApproving}
             >
               Reset to Claude's Suggestions
             </button>
             <button
               className="btn-approve"
               onClick={handleApprove}
-              disabled={criteriaApproved || isApproving || !isCriteriaConfigValid(editedCriteriaConfig)}
+              disabled={isApproving || !isCriteriaConfigValid(editedCriteriaConfig)}
             >
-              {isApproving ? 'Locking...' : criteriaApproved ? 'Criteria Approved ✓' : 'Approve and Lock Criteria'}
+              {isApproving ? 'Locking...' : 'Approve and Lock Criteria'}
             </button>
           </div>
+        </div>
+      )}
 
-          {criteriaApproved && (
-            <div className="approval-confirmation">
-              Criteria Approved ✓
-              {approvalChanges > 0
-                ? ` — ${approvalChanges} value${approvalChanges !== 1 ? 's' : ''} changed from Claude's suggestion`
-                : ' — Claude\'s original suggestion accepted as-is'}
+      {isReady && criteriaApproved && (
+        <div className="criteria-preview">
+          <div className="approval-confirmation">
+            Criteria Approved ✓
+            {approvalChanges > 0
+              ? ` — ${approvalChanges} value${approvalChanges !== 1 ? 's' : ''} changed this round`
+              : ' — accepted as-is'}
+          </div>
+
+          {!hasResults && (
+            <p className="criteria-preview-title">
+              Fill in the AHP pairwise comparison matrix above, then run the analysis.
+            </p>
+          )}
+
+          {errorMessage && (
+            <div className="upload-predict-error">
+              {errorMessage}
             </div>
           )}
 
           <div className="upload-panel-actions">
             <button
               className="btn-primary"
-              disabled={!ahpValid || !criteriaApproved || isPredicting}
+              disabled={!ahpValid || isPredicting}
               onClick={handlePredict}
             >
-              {isPredicting ? 'Running analysis...' : 'Run Risk and RUL Analysis'}
+              {isPredicting ? 'Running analysis...' : hasResults ? 'Re-run Analysis' : 'Run Risk and RUL Analysis'}
+            </button>
+            <button className="btn-reset" onClick={onEditCriteria} disabled={isPredicting}>
+              Edit Criteria
             </button>
             <button className="btn-reset" onClick={handleReset} disabled={isPredicting}>
               Reset

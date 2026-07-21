@@ -1,15 +1,46 @@
 import { useState, useEffect, useRef } from 'react'
 
+// Single source of truth for every urgency color in this component --
+// risk factor, RUL, breach status, health status, and MTBM/PM interval
+// recommendations all key off this same red/orange/yellow/green/grey scale.
+const COLORS = {
+  critical: '#dc2626', // red
+  at_risk: '#ea580c',  // orange
+  monitor: '#ca8a04',  // yellow
+  healthy: '#16a34a',  // green
+  neutral: '#6b7280',  // grey
+}
+
+const HEALTH_STATUS_PRIORITY = { Critical: 0, 'At Risk': 1, Monitor: 2, Healthy: 3 }
+
+const getHealthStatus = (rul_days, risk_factor) => {
+  if (rul_days <= 0) return { status: 'Critical', color: COLORS.critical }
+  if (rul_days < 30) return { status: 'Critical', color: COLORS.critical }
+  if (rul_days < 90) return { status: 'Critical', color: COLORS.critical }
+  if (rul_days < 180) return { status: 'At Risk', color: COLORS.at_risk }
+  if (rul_days < 365) return { status: 'Monitor', color: COLORS.monitor }
+  if (risk_factor > 7) return { status: 'Critical', color: COLORS.critical }
+  if (risk_factor > 5) return { status: 'At Risk', color: COLORS.at_risk }
+  if (risk_factor > 3) return { status: 'Monitor', color: COLORS.monitor }
+  return { status: 'Healthy', color: COLORS.healthy }
+}
+
+function computeRulDays(asset) {
+  return asset.rul_years != null ? Math.round(asset.rul_years * 365) : null
+}
+
 function riskColor(val) {
-  if (val > 6) return 'dyn-red'
-  if (val >= 4) return 'dyn-yellow'
-  return 'dyn-green'
+  if (val > 7) return COLORS.critical
+  if (val > 5) return COLORS.at_risk
+  if (val > 3) return COLORS.monitor
+  return COLORS.healthy
 }
 
 function rulDaysColor(days) {
-  if (days < 180) return 'dyn-red'
-  if (days <= 365) return 'dyn-yellow'
-  return 'dyn-green'
+  if (days <= 90) return COLORS.critical
+  if (days <= 180) return COLORS.at_risk
+  if (days <= 365) return COLORS.monitor
+  return COLORS.healthy
 }
 
 function stressColor(val) {
@@ -34,15 +65,15 @@ function breachStatus(asset) {
   const count = summary?.total_breaches ?? 0
 
   if (!summary || count === 0) {
-    return { label: '✓ All Clear', className: 'breach-clear' }
+    return { label: '✓ All Clear', color: COLORS.healthy }
   }
   if (summary.high_severity > 0) {
-    return { label: `🚨 Immediate (${count})`, className: 'breach-high' }
+    return { label: `🚨 Immediate (${count})`, color: COLORS.critical }
   }
   if (summary.medium_severity > 0) {
-    return { label: `⚠ Schedule (${count})`, className: 'breach-medium' }
+    return { label: `⚠ Schedule (${count})`, color: COLORS.at_risk }
   }
-  return { label: `⚠ Monitor (${count})`, className: 'breach-low' }
+  return { label: `⚠ Monitor (${count})`, color: COLORS.monitor }
 }
 
 function severityBadgeClass(severity) {
@@ -52,17 +83,17 @@ function severityBadgeClass(severity) {
 }
 
 function mtbmArrow(recommendation) {
-  if (recommendation === 'shorten') return { symbol: '↓', className: 'mtbm-arrow-red' }
-  if (recommendation === 'extend') return { symbol: '↑', className: 'mtbm-arrow-green' }
-  if (recommendation === 'maintain') return { symbol: '—', className: 'mtbm-arrow-grey' }
-  return { symbol: '—', className: 'mtbm-arrow-grey' }
+  if (recommendation === 'shorten') return { symbol: '↓', color: COLORS.critical }
+  if (recommendation === 'extend') return { symbol: '↑', color: COLORS.monitor }
+  if (recommendation === 'maintain') return { symbol: '—', color: COLORS.healthy }
+  return { symbol: '—', color: COLORS.neutral }
 }
 
 function mtbmBadge(recommendation) {
-  if (recommendation === 'shorten') return { label: 'Shorten ↓', className: 'mp-badge-red' }
-  if (recommendation === 'extend') return { label: 'Extend ↑', className: 'mp-badge-green' }
-  if (recommendation === 'maintain') return { label: 'On Track ✓', className: 'mp-badge-grey' }
-  return { label: 'Insufficient Data', className: 'mp-badge-grey' }
+  if (recommendation === 'shorten') return { label: 'Shorten ↓', color: COLORS.critical }
+  if (recommendation === 'extend') return { label: 'Extend ↑', color: COLORS.monitor }
+  if (recommendation === 'maintain') return { label: 'On Track ✓', color: COLORS.healthy }
+  return { label: 'Insufficient Data', color: COLORS.neutral }
 }
 
 function decisionBadge(decision) {
@@ -103,8 +134,26 @@ export default function DynamicAssetTable({
 
   if (!assets || !assets.length || !criteriaConfig) return null
 
-  const sorted = [...assets].sort((a, b) => (b.risk_factor ?? 0) - (a.risk_factor ?? 0))
+  // Sort by health urgency (Critical -> At Risk -> Monitor -> Healthy), then
+  // by RUL ascending within each group so the least remaining life is first.
+  const sorted = [...assets].sort((a, b) => {
+    const aDays = computeRulDays(a) ?? Infinity
+    const bDays = computeRulDays(b) ?? Infinity
+    const aStatus = getHealthStatus(aDays, a.risk_factor ?? 0).status
+    const bStatus = getHealthStatus(bDays, b.risk_factor ?? 0).status
+    const priorityDiff = HEALTH_STATUS_PRIORITY[aStatus] - HEALTH_STATUS_PRIORITY[bStatus]
+    if (priorityDiff !== 0) return priorityDiff
+    return aDays - bDays
+  })
   const criteria = criteriaConfig.criteria ?? []
+
+  const healthCounts = sorted.reduce((acc, asset) => {
+    const status = getHealthStatus(computeRulDays(asset) ?? Infinity, asset.risk_factor ?? 0).status
+    acc[status] = (acc[status] ?? 0) + 1
+    return acc
+  }, { Critical: 0, 'At Risk': 0, Monitor: 0, Healthy: 0 })
+
+  const hasMissingMtbf = sorted.some(a => a.mtbf?.mtbf_days == null)
 
   const activeAsset = sorted.find(a => a.asset_id === activeId) ?? null
   const activeExplanation = activeId ? explanations?.[activeId] ?? null : null
@@ -114,7 +163,17 @@ export default function DynamicAssetTable({
   const activeBreachAlerts = activeBreachId ? breachAlerts?.[activeBreachId] ?? null : null
   const isBreachLoading = loadingBreachId != null
 
-  const highSeverityAssets = sorted.filter(a => (a.breach_summary?.high_severity ?? 0) > 0)
+  // Banner urgency comes from the same getHealthStatus() the Health Status
+  // column and summary counts use, rather than a separate breach-severity
+  // threshold, so the two never disagree about which assets are urgent.
+  const criticalAssets = sorted.filter(asset => {
+    const health = getHealthStatus(computeRulDays(asset) ?? Infinity, asset.risk_factor ?? 0)
+    return health.status === 'Critical'
+  })
+  const atRiskAssets = sorted.filter(asset => {
+    const health = getHealthStatus(computeRulDays(asset) ?? Infinity, asset.risk_factor ?? 0)
+    return health.status === 'At Risk'
+  })
 
   async function handleExplain(asset) {
     setActiveId(asset.asset_id)
@@ -156,9 +215,18 @@ export default function DynamicAssetTable({
 
   return (
     <section className="card dyn-table-section">
-      {highSeverityAssets.length > 0 && (
+      {criticalAssets.length > 0 && (
         <div className="high-severity-banner">
-          🚨 {highSeverityAssets.length} asset{highSeverityAssets.length !== 1 ? 's' : ''} require immediate attention: {highSeverityAssets.map(a => a.asset_id).join(', ')}
+          🚨 {criticalAssets.length} asset{criticalAssets.length !== 1 ? 's' : ''} require immediate attention: {criticalAssets.map(a => a.asset_id).join(', ')}
+        </div>
+      )}
+
+      {criticalAssets.length === 0 && atRiskAssets.length > 0 && (
+        <div
+          className="high-severity-banner"
+          style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: COLORS.at_risk }}
+        >
+          ⚠ {atRiskAssets.length} asset{atRiskAssets.length !== 1 ? 's' : ''} require scheduling: {atRiskAssets.map(a => a.asset_id).join(', ')}
         </div>
       )}
 
@@ -173,11 +241,19 @@ export default function DynamicAssetTable({
         Assets ranked by overall risk factor. Scores derived from AI-inferred criteria for {criteriaConfig.asset_type}.
       </p>
 
+      <div className="health-status-summary" style={{ display: 'flex', gap: '1.5rem', margin: '0.5rem 0 1rem' }}>
+        <span style={{ color: COLORS.critical, fontWeight: 'bold' }}>{healthCounts.Critical} Critical</span>
+        <span style={{ color: COLORS.at_risk, fontWeight: 'bold' }}>{healthCounts['At Risk']} At Risk</span>
+        <span style={{ color: COLORS.monitor, fontWeight: 'bold' }}>{healthCounts.Monitor} Monitor</span>
+        <span style={{ color: COLORS.healthy, fontWeight: 'bold' }}>{healthCounts.Healthy} Healthy</span>
+      </div>
+
       <div className="registry-scroll">
         <table className="dyn-table">
           <thead>
             <tr>
               <th>Asset ID</th>
+              <th>Health Status</th>
               {criteria.map(c => (
                 <th key={c.id} className="th-score">
                   {c.name}{c.manual_input ? ' (Manual)' : ''}
@@ -195,7 +271,7 @@ export default function DynamicAssetTable({
           </thead>
           <tbody>
             {sorted.map(asset => {
-              const rulDays = asset.rul_years != null ? Math.round(asset.rul_years * 365) : null
+              const rulDays = computeRulDays(asset)
               const ciLowDays = asset.ci_low != null ? Math.round(asset.ci_low * 365) : null
               const ciHighDays = asset.ci_high != null ? Math.round(asset.ci_high * 365) : null
               const isActive = activeId === asset.asset_id
@@ -205,10 +281,23 @@ export default function DynamicAssetTable({
               const status = breachStatus(asset)
               const alertRequired = asset.breach_summary?.alert_required ?? false
               const mtbmInfo = asset.mtbm?.mtbm_recommended_days != null ? mtbmArrow(asset.mtbm.recommendation) : null
+              const health = getHealthStatus(rulDays ?? Infinity, asset.risk_factor ?? 0)
 
               return (
                 <tr key={asset.asset_id} className={isActive || isBreachActive ? 'row-expanded' : ''}>
                   <td className="td-id">{asset.asset_id}</td>
+                  <td>
+                    <span style={{
+                      backgroundColor: health.color,
+                      color: 'white',
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      fontSize: '12px',
+                      fontWeight: 'bold',
+                    }}>
+                      {health.status}
+                    </span>
+                  </td>
                   {criteria.map(c => {
                     const val = asset.scores?.[c.id]
                     return (
@@ -219,27 +308,29 @@ export default function DynamicAssetTable({
                   })}
                   <td className="td-score">
                     {asset.risk_factor != null ? (
-                      <span className={`rf-pill ${riskColor(asset.risk_factor)}`}>
+                      <span className="rf-pill" style={{ backgroundColor: riskColor(asset.risk_factor) }}>
                         {asset.risk_factor.toFixed(2)}
                       </span>
                     ) : '-'}
                   </td>
                   <td className="td-score">
-                    <span className={`breach-pill ${status.className}`}>{status.label}</span>
+                    <span className="breach-pill" style={{ backgroundColor: status.color, color: 'white' }}>
+                      {status.label}
+                    </span>
                   </td>
                   <td className="td-score">
                     {rulDays != null ? (
-                      <span className={`rul-pill ${rulDaysColor(rulDays)}`}>
+                      <span className="rul-pill" style={{ backgroundColor: rulDaysColor(rulDays) }}>
                         {rulDays}
                       </span>
                     ) : '-'}
                   </td>
                   <td className="td-score">
-                    {asset.mtbf?.mtbf_days != null ? `${Math.round(asset.mtbf.mtbf_days)} d` : 'N/A'}
+                    {asset.mtbf?.mtbf_days != null ? `${Math.round(asset.mtbf.mtbf_days)} d` : 'N/A*'}
                   </td>
                   <td className="td-score">
                     {mtbmInfo ? (
-                      <span className={`mtbm-arrow ${mtbmInfo.className}`}>
+                      <span className="mtbm-arrow" style={{ color: mtbmInfo.color }}>
                         {asset.mtbm.mtbm_recommended_days} d {mtbmInfo.symbol}
                       </span>
                     ) : 'N/A'}
@@ -273,6 +364,12 @@ export default function DynamicAssetTable({
         </table>
       </div>
 
+      {hasMissingMtbf && (
+        <p className="mtbf-footnote" style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '0.4rem' }}>
+          * Minimum 2 observed failures required for MTBF estimation
+        </p>
+      )}
+
       {activeId && activeAsset && (
         <div className="explain-backdrop" onClick={handleBackdropClick}>
           <div className="explain-popup" ref={popupRef}>
@@ -304,6 +401,8 @@ export default function DynamicAssetTable({
               mtbf={activeAsset.mtbf}
               mtbm={activeAsset.mtbm}
               replaceVsMaintain={activeAsset.replace_vs_maintain}
+              pmIntervalSource={criteriaConfig.pm_interval_source}
+              pmIntervalConfidence={criteriaConfig.pm_interval_confidence}
             />
 
             {/* Divider */}
@@ -425,7 +524,7 @@ function MultiSensorAnalysis({ correlationSummary }) {
   )
 }
 
-function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain }) {
+function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, pmIntervalConfidence }) {
   if (!mtbf && !mtbm && !replaceVsMaintain) return null
 
   const badge = mtbmBadge(mtbm?.recommendation)
@@ -454,10 +553,15 @@ function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain }) {
           <span className="mp-card-value">
             {mtbm?.mtbm_recommended_days != null ? `${mtbm.mtbm_recommended_days} days` : 'Insufficient data'}
           </span>
-          {mtbm?.current_interval_days != null && (
-            <span className="mp-card-sub">Current: {mtbm.current_interval_days} days</span>
+          {(pmIntervalSource || pmIntervalConfidence) && (
+            <span className="mp-card-sub">
+              Based on: {pmIntervalSource ?? 'default'} ({pmIntervalConfidence ?? 'low'} confidence)
+            </span>
           )}
-          <span className={`mp-badge ${badge.className}`}>{badge.label}</span>
+          {mtbm?.current_interval_days != null && (
+            <span className="mp-card-sub">Current approved interval: {mtbm.current_interval_days} days</span>
+          )}
+          <span className="mp-badge" style={{ backgroundColor: badge.color, color: 'white' }}>{badge.label}</span>
           {mtbm?.recommendation_text && <p className="mp-card-note">{mtbm.recommendation_text}</p>}
         </div>
 

@@ -2,6 +2,18 @@ import { useState, useCallback } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
+// FastAPI error bodies come in two shapes: a plain string detail (from our own
+// HTTPException calls) or a list of Pydantic validation-error objects (from
+// automatic request validation). Coercing either straight into `new Error()`
+// silently stringifies objects/arrays to "[object Object]" -- extract a real
+// readable string here instead.
+function extractErrorDetail(detail, fallback) {
+  const d = detail?.detail
+  if (typeof d === 'string') return d
+  if (Array.isArray(d)) return d.map(e => e?.msg ?? String(e)).join('; ')
+  return fallback
+}
+
 export default function useUpload() {
   const [uploadStatus, setUploadStatus] = useState('idle')
   const [criteriaConfig, setCriteriaConfig] = useState(null)
@@ -16,6 +28,7 @@ export default function useUpload() {
   const [criteriaApproved, setCriteriaApproved] = useState(false)
   const [approvedCriteriaConfig, setApprovedCriteriaConfig] = useState(null)
   const [approvalChanges, setApprovalChanges] = useState(0)
+  const [hasResults, setHasResults] = useState(false)
 
   const uploadAndAnalyze = useCallback(async (file) => {
     setUploadStatus('uploading')
@@ -50,6 +63,7 @@ export default function useUpload() {
       setCriteriaApproved(false)
       setApprovedCriteriaConfig(null)
       setApprovalChanges(0)
+      setHasResults(false)
       setUploadStatus('ready')
     } catch (err) {
       setErrorMessage(err.message)
@@ -57,37 +71,64 @@ export default function useUpload() {
     }
   }, [])
 
-  const approveCriteria = useCallback(async (editedCriteriaConfig) => {
+  const approveCriteria = useCallback(async (editedCriteriaConfig, pmIntervalDays) => {
     if (!modelPath) return null
 
     setErrorMessage(null)
+
+    // editedCriteriaConfig must be a plain object here, not an already-
+    // JSON.stringify'd string -- JSON.stringify(body) below serializes it
+    // exactly once. UploadPanel builds it via JSON.parse(JSON.stringify(...))
+    // (a deep clone), so it is always a plain object by the time it gets here.
+    const requestBody = {
+      criteria_config: editedCriteriaConfig,
+      model_path: modelPath,
+      file_path: uploadedFileName ? `data/raw/uploads/${uploadedFileName}` : null,
+      // On re-approval, diff against the previously approved version (not
+      // Claude's original draft) so the change count reflects this round.
+      previous_config: approvedCriteriaConfig ?? null,
+      approved_pm_interval_days: pmIntervalDays ?? null,
+    }
+    console.log('[useUpload] approveCriteria: request body =', requestBody)
 
     try {
       const res = await fetch(`${API_BASE}/upload/approve-criteria`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          criteria_config: editedCriteriaConfig,
-          model_path: modelPath,
-          file_path: uploadedFileName ? `data/raw/uploads/${uploadedFileName}` : null,
-        }),
+        body: JSON.stringify(requestBody),
       })
 
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
-        throw new Error(detail?.detail ?? `Approve failed (${res.status})`)
+        const errBody = await res.json().catch(() => ({}))
+        console.error('[useUpload] approveCriteria: error response', res.status, errBody)
+        throw new Error(extractErrorDetail(errBody, `Approve failed (${res.status})`))
       }
 
       const data = await res.json()
+      console.log('[useUpload] approveCriteria: response =', data)
       setCriteriaApproved(true)
-      setApprovedCriteriaConfig(data.criteria_config)
+      // Merge the server-confirmed approved PM interval onto the config so
+      // every downstream consumer (predict-all, DynamicAssetTable) can read
+      // it straight off approvedCriteriaConfig without a separate prop.
+      setApprovedCriteriaConfig({
+        ...data.criteria_config,
+        approved_pm_interval_days: data.approved_pm_interval_days ?? null,
+      })
       setApprovalChanges(data.changes_from_original)
       return data
     } catch (err) {
       setErrorMessage(err.message)
       return null
     }
-  }, [modelPath, uploadedFileName])
+  }, [modelPath, uploadedFileName, approvedCriteriaConfig])
+
+  // Reopens the approval screen (pre-populated with the current approved config)
+  // without discarding existing results -- only threshold/name edits require
+  // going through approve-criteria again; weight-only re-runs never need this.
+  const editCriteria = useCallback(() => {
+    setErrorMessage(null)
+    setCriteriaApproved(false)
+  }, [])
 
   const predictAll = useCallback(async (weights, cr, manualScores) => {
     console.log('[useUpload] predictAll called with weights:', weights, '| cr:', cr, '| manualScores:', manualScores)
@@ -97,8 +138,12 @@ export default function useUpload() {
       return
     }
 
-    if (!criteriaApproved) {
-      console.warn('[useUpload] predictAll: criteria not approved — aborting')
+    // First approval is always required before any prediction can run. Once
+    // approved at least once, weight-only re-runs never need re-approval --
+    // only a fresh threshold/name edit (which clears criteriaApproved via
+    // editCriteria()) blocks this until the user re-approves.
+    if (!approvedCriteriaConfig) {
+      console.warn('[useUpload] predictAll: criteria have never been approved — aborting')
       setErrorMessage('Criteria have not been approved. Complete the review step before running predictions.')
       return
     }
@@ -115,6 +160,7 @@ export default function useUpload() {
         cr,
         manual_scores: manualScores,
         model_path: modelPath,
+        approved_criteria_config: approvedCriteriaConfig,
       }
       console.log('[useUpload] predictAll: POST /upload/predict-all body =', JSON.stringify(body))
 
@@ -140,13 +186,14 @@ export default function useUpload() {
       console.log('[useUpload] predictAll: response weights used, assets count =', data.assets?.length,
         '| first asset risk_factor =', data.assets?.[0]?.risk_factor)
       setPredictedAssets(data.assets)
+      setHasResults(true)
     } catch (err) {
       console.error('[useUpload] predictAll: caught error =', err.message)
       setErrorMessage(err.message)
     } finally {
       setIsPredicting(false)
     }
-  }, [modelPath, uploadedFileName, criteriaApproved])
+  }, [modelPath, uploadedFileName, approvedCriteriaConfig])
 
   const explainAsset = useCallback(async (assetPayload) => {
     const activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig
@@ -257,6 +304,7 @@ export default function useUpload() {
     setCriteriaApproved(false)
     setApprovedCriteriaConfig(null)
     setApprovalChanges(0)
+    setHasResults(false)
   }, [])
 
   return {
@@ -272,7 +320,9 @@ export default function useUpload() {
     criteriaApproved,
     approvedCriteriaConfig,
     approvalChanges,
+    hasResults,
     approveCriteria,
+    editCriteria,
     uploadAndAnalyze,
     predictAll,
     explainAsset,

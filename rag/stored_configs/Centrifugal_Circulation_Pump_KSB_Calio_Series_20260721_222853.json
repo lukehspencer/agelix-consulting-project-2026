@@ -1,0 +1,309 @@
+{
+  "asset_type": "Centrifugal Circulation Pump (KSB Calio Series)",
+  "failure_modes": [
+    "Bearing Failure due to Mechanical Wear or Dry Running (Cavitation Erosion)",
+    "Motor Winding Insulation Breakdown due to Thermal Overload",
+    "Electronics Failure due to Voltage Spike or Thermal Overload"
+  ],
+  "column_roles": {
+    "asset_id": "Pump_ID",
+    "date": "Date",
+    "rul_target": "True_RUL_Days",
+    "operating_hours": "Operating_Hours",
+    "log_asset_id": "Pump_ID",
+    "log_date": "Event_Date",
+    "log_event_type": "Event_Type",
+    "log_component": "Failed_Component"
+  },
+  "failure_event_values": [
+    "Failure"
+  ],
+  "criteria": [
+    {
+      "id": "C1",
+      "name": "Maintenance & Inspection History",
+      "description": "Manually assessed score reflecting the recency, completeness, and quality of preventive maintenance and inspection records for the pump.",
+      "manual_input": true,
+      "default_score": 6,
+      "ui_label": "Maintenance History Risk Score (1=Excellent/Recent Maintenance, 10=No Record/Severely Overdue)"
+    },
+    {
+      "id": "C2",
+      "name": "Bearing & Mechanical Condition (Vibration)",
+      "description": "Assesses mechanical degradation risk via vibration score, which is a direct indicator of bearing wear, imbalance, and cavitation erosion in centrifugal pumps.",
+      "manual_input": false,
+      "primary_column": "Vibration_Score",
+      "secondary_columns": [
+        "Speed_RPM"
+      ],
+      "thresholds": [
+        {
+          "max": 0.197,
+          "score": 2
+        },
+        {
+          "max": 0.4,
+          "score": 4
+        },
+        {
+          "max": 0.9,
+          "score": 6
+        },
+        {
+          "max": 1.8,
+          "score": 8
+        },
+        {
+          "score": 10
+        }
+      ],
+      "penalties": [
+        {
+          "column": "Speed_RPM",
+          "description": "High rotational speed amplifies vibration-induced bearing wear and cavitation erosion risk",
+          "bands": [
+            {
+              "max": 1782.0,
+              "penalty": 0
+            },
+            {
+              "max": 2403.0,
+              "penalty": 1
+            },
+            {
+              "max": 2772.0,
+              "penalty": 2
+            },
+            {
+              "penalty": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C3",
+      "name": "Motor Winding Thermal Stress",
+      "description": "Evaluates thermal overload risk to motor windings using winding temperature, which is the primary driver of insulation breakdown failures in this pump series.",
+      "manual_input": false,
+      "primary_column": "Winding_Temp_C",
+      "secondary_columns": [
+        "Current_A"
+      ],
+      "thresholds": [
+        {
+          "max": 42.6,
+          "score": 2
+        },
+        {
+          "max": 49.925,
+          "score": 4
+        },
+        {
+          "max": 60.4,
+          "score": 6
+        },
+        {
+          "max": 75.0,
+          "score": 8
+        },
+        {
+          "score": 10
+        }
+      ],
+      "penalties": [
+        {
+          "column": "Current_A",
+          "description": "Elevated current draw accelerates winding heat generation and insulation degradation risk",
+          "bands": [
+            {
+              "max": 0.51,
+              "penalty": 0
+            },
+            {
+              "max": 0.7,
+              "penalty": 1
+            },
+            {
+              "max": 0.8,
+              "penalty": 2
+            },
+            {
+              "penalty": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C4",
+      "name": "SPM & Bearing Thermal Condition",
+      "description": "Monitors SPM temperature as an indicator of bearing lubrication failure, dry running, or mechanical friction heat buildup in the pump.",
+      "manual_input": false,
+      "primary_column": "SPM_Temp_C",
+      "secondary_columns": [
+        "Vibration_Score"
+      ],
+      "thresholds": [
+        {
+          "max": 46.4,
+          "score": 2
+        },
+        {
+          "max": 53.7,
+          "score": 3
+        },
+        {
+          "max": 60.825,
+          "score": 5
+        },
+        {
+          "max": 69.4,
+          "score": 7
+        },
+        {
+          "score": 9
+        }
+      ],
+      "penalties": [
+        {
+          "column": "Vibration_Score",
+          "description": "Co-occurring elevated vibration with high SPM temperature indicates accelerated bearing failure progression",
+          "bands": [
+            {
+              "max": 0.327,
+              "penalty": 0
+            },
+            {
+              "max": 0.703,
+              "penalty": 1
+            },
+            {
+              "max": 1.2,
+              "penalty": 2
+            },
+            {
+              "penalty": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C5",
+      "name": "Power Supply & Electronics Stability",
+      "description": "Assesses electronics failure risk by evaluating mains voltage deviations from the nominal operating band, as voltage spikes and instability are a confirmed root cause of electronics failures in this pump.",
+      "manual_input": false,
+      "primary_column": "Mains_Voltage",
+      "secondary_columns": [
+        "Current_A"
+      ],
+      "thresholds": [
+        {
+          "max": 220.0,
+          "score": 8
+        },
+        {
+          "max": 226.9,
+          "score": 6
+        },
+        {
+          "max": 232.3,
+          "score": 2
+        },
+        {
+          "max": 237.0,
+          "score": 5
+        },
+        {
+          "score": 9
+        }
+      ],
+      "penalties": [
+        {
+          "column": "Current_A",
+          "description": "High current draw under abnormal voltage conditions further stresses electronics components and raises failure risk",
+          "bands": [
+            {
+              "max": 0.51,
+              "penalty": 0
+            },
+            {
+              "max": 0.7,
+              "penalty": 1
+            },
+            {
+              "max": 0.8,
+              "penalty": 2
+            },
+            {
+              "penalty": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C6",
+      "name": "Fluid Operating Condition & Cavitation Risk",
+      "description": "Evaluates cavitation erosion and dry-running risk based on fluid temperature, where elevated temperatures reduce fluid density and promote cavitation in centrifugal pumps.",
+      "manual_input": false,
+      "primary_column": "Fluid_Temp_C",
+      "secondary_columns": [
+        "Speed_RPM"
+      ],
+      "thresholds": [
+        {
+          "max": 22.0,
+          "score": 2
+        },
+        {
+          "max": 25.8,
+          "score": 3
+        },
+        {
+          "max": 31.6,
+          "score": 5
+        },
+        {
+          "max": 33.0,
+          "score": 7
+        },
+        {
+          "score": 9
+        }
+      ],
+      "penalties": [
+        {
+          "column": "Speed_RPM",
+          "description": "High pump speed at elevated fluid temperatures significantly increases cavitation erosion risk and accelerates bearing wear",
+          "bands": [
+            {
+              "max": 1782.0,
+              "penalty": 0
+            },
+            {
+              "max": 2403.0,
+              "penalty": 1
+            },
+            {
+              "max": 2772.0,
+              "penalty": 2
+            },
+            {
+              "penalty": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C7",
+      "name": "Operational Criticality & Redundancy",
+      "description": "Manually assessed score reflecting the criticality of this pump within the system, the consequence of failure on operations, and the availability of a standby unit.",
+      "manual_input": true,
+      "default_score": 5,
+      "ui_label": "Asset Criticality Score (1=Low Criticality/Standby Available, 10=Critical Single Point of Failure/No Redundancy)"
+    }
+  ]
+}

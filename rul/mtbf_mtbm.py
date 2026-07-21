@@ -20,7 +20,7 @@ def calculate_mtbf(asset_snapshot: dict, criteria_config: dict) -> dict:
             f"{total_operating_days:.0f} operating days"
         )
     elif total_failure_count == 1:
-        mtbf_days = total_runtime_hours / 24
+        mtbf_days = total_runtime_hours / max(total_failure_count, 1) / 24
         basis = "single_failure"
         mtbf_note = (
             "Estimated from a single observed failure across the full recorded "
@@ -29,7 +29,7 @@ def calculate_mtbf(asset_snapshot: dict, criteria_config: dict) -> dict:
     else:
         mtbf_days = None
         basis = "insufficient_data"
-        mtbf_note = "No failures recorded -- MTBF cannot be estimated"
+        mtbf_note = "Insufficient failure history -- MTBF unavailable"
 
     if total_failure_count >= 5:
         mtbf_confidence = "high"
@@ -49,12 +49,16 @@ def calculate_mtbf(asset_snapshot: dict, criteria_config: dict) -> dict:
 def calculate_mtbm(mtbf_days: float, risk_factor: float,
                     current_interval_days: int = 90) -> dict:
     if mtbf_days is None:
+        next_maintenance_date = (date.today() + timedelta(days=current_interval_days)).isoformat()
         return {
-            "mtbm_recommended_days": None,
-            "current_interval_days": None,
-            "recommendation": "insufficient_data",
-            "recommendation_text": None,
-            "next_maintenance_date": None,
+            "mtbm_recommended_days": current_interval_days,
+            "current_interval_days": current_interval_days,
+            "recommendation": "maintain",
+            "recommendation_text": (
+                "Insufficient failure history for interval optimization -- "
+                "maintain current schedule"
+            ),
+            "next_maintenance_date": next_maintenance_date,
         }
 
     base_mtbm = mtbf_days * 0.6

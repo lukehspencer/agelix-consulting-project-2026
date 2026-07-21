@@ -28,6 +28,9 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 _UPLOAD_DIR = Path("data/raw/uploads")
 _FAILURE_CASES_DIR = Path("docs/failure_cases")
 _CR_THRESHOLD = 0.10
+_PM_INTERVAL_MIN_DAYS = 7
+_PM_INTERVAL_MAX_DAYS = 730
+_PM_INTERVAL_DEFAULT_DAYS = 90
 
 
 def _generate_failure_case(criteria_config: dict, training_result: dict) -> None:
@@ -158,6 +161,7 @@ class PredictAllInput(BaseModel):
     cr: float
     manual_scores: dict
     model_path: str = "rul/dynamic_model.pkl"
+    approved_criteria_config: dict | None = None
 
     @field_validator("weights")
     @classmethod
@@ -199,7 +203,9 @@ class ExplainBreachInput(BaseModel):
 class ApproveCriteriaInput(BaseModel):
     criteria_config: dict
     model_path: str = "rul/dynamic_model.pkl"
-    file_path: str = None
+    file_path: str | None = None
+    previous_config: dict | None = None
+    approved_pm_interval_days: int | None = None
 
 
 @router.post("/analyze")
@@ -217,7 +223,7 @@ async def analyze_upload(file: UploadFile):
     retrieved_context = retrieve_for_schema_inference(schema_summary)
 
     try:
-        criteria_config = infer_criteria_config(schema_summary, retrieved_context)
+        criteria_config = infer_criteria_config(schema_summary, retrieved_context, file_path=str(file_path))
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -293,14 +299,33 @@ def predict_all(body: PredictAllInput):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Model not found at '{body.model_path}'.")
 
-    if not bundle.get("approved", False):
-        raise HTTPException(
-            status_code=400,
-            detail="Criteria have not been approved. Complete the review step before running predictions.",
-        )
-
-    criteria_config = bundle["criteria_config"]
     schema_summary = bundle["schema_summary"]
+
+    # A criteria config passed directly (the client's currently-approved config)
+    # lets weight-only re-runs skip a full re-approval cycle. Falling back to the
+    # bundle still requires that bundle to have been approved at least once --
+    # first approval is always required before any prediction can run.
+    if body.approved_criteria_config is not None:
+        criteria_config = body.approved_criteria_config
+        try:
+            _validate_approved_criteria(criteria_config, schema_summary)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    else:
+        if not bundle.get("approved", False):
+            raise HTTPException(
+                status_code=400,
+                detail="Criteria have not been approved. Complete the review step before running predictions.",
+            )
+        criteria_config = bundle["criteria_config"]
+
+    # PM interval always comes from the config/bundle, never a bare literal --
+    # the SME-approved interval if one was set at approval time, else Claude's
+    # recommended interval from schema inference, else the last-resort default.
+    current_interval_days = bundle.get(
+        "approved_pm_interval_days",
+        criteria_config.get("recommended_pm_interval_days", _PM_INTERVAL_DEFAULT_DAYS),
+    )
 
     try:
         snapshots = aggregate_uploaded_data(
@@ -326,7 +351,7 @@ def predict_all(body: PredictAllInput):
         mtbm_result = calculate_mtbm(
             mtbf_days=mtbf_result["mtbf_days"],
             risk_factor=risk_factor,
-            current_interval_days=snap.get("days_since_last_event", 90),
+            current_interval_days=current_interval_days,
         )
         replace_maintain = calculate_replace_vs_maintain(
             mtbf_days=mtbf_result["mtbf_days"],
@@ -447,45 +472,59 @@ def explain_breach_endpoint(body: ExplainBreachInput):
 @router.post("/approve-criteria")
 def approve_criteria(body: ApproveCriteriaInput):
     try:
-        bundle = joblib.load(body.model_path)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Model not found at '{body.model_path}'.")
+        try:
+            bundle = joblib.load(body.model_path)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Model not found at '{body.model_path}'.")
 
-    schema_summary = bundle["schema_summary"]
+        schema_summary = bundle["schema_summary"]
 
-    try:
-        _validate_approved_criteria(body.criteria_config, schema_summary)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        try:
+            _validate_approved_criteria(body.criteria_config, schema_summary)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
-    original_config = bundle["criteria_config"]
-    changes = _count_criteria_changes(original_config, body.criteria_config)
+        # On re-approval, diff against the previously approved config (if the client
+        # sent one) rather than whatever is currently stored on the bundle, so the
+        # change count and audit log reflect what actually changed this round.
+        original_config = body.previous_config if body.previous_config is not None else bundle["criteria_config"]
+        changes = _count_criteria_changes(original_config, body.criteria_config)
 
-    bundle["criteria_config"] = body.criteria_config
-    bundle["approved"] = True
-    joblib.dump(bundle, body.model_path)
+        bundle["criteria_config"] = body.criteria_config
+        bundle["approved"] = True
 
-    config_path = None
-    try:
-        config_path = store_criteria_config(
-            body.criteria_config, body.criteria_config.get("asset_type", "unknown"),
+        pm_days = body.approved_pm_interval_days
+        if pm_days is not None and _PM_INTERVAL_MIN_DAYS <= pm_days <= _PM_INTERVAL_MAX_DAYS:
+            bundle["approved_pm_interval_days"] = pm_days
+
+        joblib.dump(bundle, body.model_path)
+
+        config_path = None
+        try:
+            config_path = store_criteria_config(
+                body.criteria_config, body.criteria_config.get("asset_type", "unknown"),
+            )
+        except Exception:
+            pass
+
+        approved_at = log_approval(
+            file_path=body.file_path,
+            config_filename=config_path.name if config_path else None,
+            asset_type=body.criteria_config.get("asset_type", "unknown"),
+            original_config=original_config,
+            approved_config=body.criteria_config,
+            changes_count=changes,
         )
-    except Exception:
-        pass
-
-    approved_at = log_approval(
-        file_path=body.file_path,
-        config_filename=config_path.name if config_path else None,
-        asset_type=body.criteria_config.get("asset_type", "unknown"),
-        original_config=original_config,
-        approved_config=body.criteria_config,
-        changes_count=changes,
-    )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     return {
         "status": "approved",
         "criteria_config": body.criteria_config,
         "changes_from_original": changes,
+        "approved_pm_interval_days": bundle.get("approved_pm_interval_days"),
         "approved_at": approved_at,
     }
 

@@ -28,7 +28,8 @@ export default function Dashboard() {
   const {
     uploadStatus, criteriaConfig, trainingResult,
     uploadedAssets, predictedAssets, modelPath, errorMessage, isPredicting,
-    criteriaApproved, approvedCriteriaConfig, approvalChanges, approveCriteria,
+    criteriaApproved, approvedCriteriaConfig, approvalChanges, hasResults,
+    approveCriteria, editCriteria,
     uploadAndAnalyze, predictAll, resetUpload, explainAsset, explainBreach,
   } = useUpload()
 
@@ -81,13 +82,15 @@ export default function Dashboard() {
       <UploadPanel
         uploadStatus={uploadStatus}
         criteriaConfig={criteriaConfig}
+        approvedCriteriaConfig={approvedCriteriaConfig}
         trainingResult={trainingResult}
         errorMessage={errorMessage}
         isPredicting={isPredicting}
-        hasPredictions={predictedAssets.length > 0}
+        hasResults={hasResults}
         criteriaApproved={criteriaApproved}
         approvalChanges={approvalChanges}
         onApproveCriteria={approveCriteria}
+        onEditCriteria={editCriteria}
         onAnalyze={uploadAndAnalyze}
         onPredict={predictAll}
         onReset={resetUpload}

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import anthropic
+import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -9,8 +10,53 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 _MODEL = "claude-sonnet-4-6"
 _MAX_TOKENS = 2500
 
+_LOG_SHEET = "Failure & Maintenance Logs"
+_PM_FAILURE_KEYWORDS = ("fail", "fault", "error")
+_PM_INTERVAL_DEFAULT_DAYS = 90
+_PM_INTERVAL_MIN_DAYS = 7
+_PM_INTERVAL_MAX_DAYS = 730
+_PM_INTERVAL_SOURCES = ("inferred_from_log", "domain_knowledge", "default")
+_PM_INTERVAL_CONFIDENCES = ("high", "medium", "low")
 
-def _build_prompt(s: dict, retrieved_context: dict = None) -> str:
+
+def _compute_maintenance_event_dates(file_path: str, schema_summary: dict) -> list[str]:
+    """ISO date strings for log rows that are maintenance events (not failures),
+    used to let Claude infer a PM interval from actual observed intervals.
+    Returns [] on any missing data or read failure -- this is best-effort context
+    for the prompt, never a reason to block schema inference.
+    """
+    date_col = schema_summary.get("log_date_column")
+    event_col = schema_summary.get("log_event_type_column")
+    if not file_path or not date_col or not event_col:
+        return []
+
+    failure_values = {
+        str(v).strip().lower() for v in schema_summary.get("log_event_type_values", [])
+        if any(kw in str(v).lower() for kw in _PM_FAILURE_KEYWORDS)
+    }
+
+    try:
+        xls = pd.ExcelFile(file_path, engine="openpyxl")
+        log_sheet = next(
+            (name for name in xls.sheet_names if name.strip().lower() == _LOG_SHEET.lower()),
+            None,
+        )
+        if log_sheet is None:
+            return []
+        df_log = pd.read_excel(xls, sheet_name=log_sheet, header=0)
+    except Exception:
+        return []
+
+    if event_col not in df_log.columns or date_col not in df_log.columns:
+        return []
+
+    is_maintenance = ~df_log[event_col].astype(str).str.strip().str.lower().isin(failure_values)
+    maintenance_dates = pd.to_datetime(df_log.loc[is_maintenance, date_col], errors="coerce").dropna()
+    return sorted(str(d.date()) for d in maintenance_dates)
+
+
+def _build_prompt(s: dict, retrieved_context: dict = None,
+                   maintenance_event_dates: list[str] = None) -> str:
     sensor_lines = []
     for col in s["sensor_columns"]:
         st = s["sensor_stats"][col]
@@ -22,6 +68,7 @@ def _build_prompt(s: dict, retrieved_context: dict = None) -> str:
     sensor_block = "\n".join(sensor_lines)
 
     extra_samples = json.dumps(s.get("log_extra_column_samples", {}), indent=2)
+    maintenance_dates_display = maintenance_event_dates or []
 
     rag_block = ""
     if retrieved_context and retrieved_context.get("retrieval_available"):
@@ -61,6 +108,11 @@ FAILURE & MAINTENANCE LOG:
 - Unique event type values found: {s.get("log_event_type_values", [])}
 - Additional log columns and sample values: {extra_samples}
 - Available log sheet column names (use ONLY these exact names): {list((s.get("log_extra_columns") or []) + [c for c in [s.get("log_asset_id_column"), s.get("log_date_column"), s.get("log_event_type_column")] if c])}
+- Maintenance event dates found in log: {maintenance_dates_display}
+
+Based on the intervals between these maintenance events, infer the recommended
+PM interval in days. If fewer than 2 maintenance events exist, use domain
+knowledge about this asset type to suggest an appropriate interval.
 {rag_block}
 TASK:
 Design between 5 and 7 AHP criteria, choosing the number that best represents
@@ -98,6 +150,10 @@ no trailing text. The JSON must conform exactly to this structure:
   }},
 
   "failure_event_values": ["<exact string value(s) that mean Failure in log_event_type column>"],
+
+  "recommended_pm_interval_days": <int>,
+  "pm_interval_source": "inferred_from_log" | "domain_knowledge" | "default",
+  "pm_interval_confidence": "high" | "medium" | "low",
 
   "criteria": [
     {{
@@ -251,8 +307,35 @@ def _validate_config(config: dict, schema_summary: dict) -> None:
         config["failure_event_values"] = matched if matched else [log_event_values[0]]
 
 
-def infer_criteria_config(schema_summary: dict, retrieved_context: dict = None) -> dict:
-    prompt = _build_prompt(schema_summary, retrieved_context)
+def _apply_pm_interval_defaults(config: dict) -> None:
+    """Ensures recommended_pm_interval_days/pm_interval_source/pm_interval_confidence
+    are always present and sane, regardless of what Claude actually returned.
+    """
+    days = config.get("recommended_pm_interval_days")
+    valid_days = (
+        isinstance(days, (int, float)) and not isinstance(days, bool)
+        and _PM_INTERVAL_MIN_DAYS <= days <= _PM_INTERVAL_MAX_DAYS
+    )
+
+    source = config.get("pm_interval_source")
+    if valid_days:
+        config["recommended_pm_interval_days"] = int(days)
+    else:
+        config["recommended_pm_interval_days"] = _PM_INTERVAL_DEFAULT_DAYS
+        source = "default"
+
+    config["pm_interval_source"] = source if source in _PM_INTERVAL_SOURCES else "default"
+
+    confidence = config.get("pm_interval_confidence")
+    config["pm_interval_confidence"] = (
+        confidence if confidence in _PM_INTERVAL_CONFIDENCES else "low"
+    )
+
+
+def infer_criteria_config(schema_summary: dict, retrieved_context: dict = None,
+                           file_path: str = None) -> dict:
+    maintenance_event_dates = _compute_maintenance_event_dates(file_path, schema_summary)
+    prompt = _build_prompt(schema_summary, retrieved_context, maintenance_event_dates)
 
     try:
         client = anthropic.Anthropic()
@@ -281,5 +364,6 @@ def infer_criteria_config(schema_summary: dict, retrieved_context: dict = None) 
         ) from exc
 
     _validate_config(config, schema_summary)
+    _apply_pm_interval_defaults(config)
 
     return config

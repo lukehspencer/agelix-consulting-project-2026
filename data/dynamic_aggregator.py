@@ -1,4 +1,5 @@
 import itertools
+import logging
 from datetime import timedelta
 
 import pandas as pd
@@ -61,6 +62,56 @@ def compute_correlation_features(window: pd.DataFrame, sensor_cols: list[str]) -
     return features
 
 
+def _resolve_log_asset_id_column(df_log: pd.DataFrame, configured_col: str | None,
+                                  telemetry_ids: list[str]) -> str | None:
+    """Picks the log-sheet column to match against telemetry asset IDs.
+
+    Prefers the column upload_schema.py already detected. Falls back to
+    scanning any column whose name contains "id" (case-insensitive) and
+    whose values actually overlap with the telemetry asset ID set, in case
+    detection returned None or picked a column that doesn't line up with
+    the telemetry sheet (e.g. entirely blank).
+    """
+    telemetry_id_set = set(telemetry_ids)
+    logging.info(f"Telemetry asset IDs: {sorted(telemetry_id_set)}")
+
+    if configured_col and configured_col in df_log.columns:
+        log_values = set(df_log[configured_col].dropna().astype(str).unique())
+        overlap = log_values & telemetry_id_set
+        logging.info(
+            f"Log asset ID column '{configured_col}': unique values={sorted(log_values)}, "
+            f"{len(overlap)} overlap with telemetry asset IDs"
+        )
+        if overlap:
+            return configured_col
+        logging.info(
+            f"Log asset ID column '{configured_col}' has no overlap with telemetry asset IDs -- "
+            "searching other 'id' columns as a fallback"
+        )
+    else:
+        logging.info(
+            f"Configured log asset ID column {configured_col!r} not found in log sheet columns "
+            f"{list(df_log.columns)} -- searching for a fallback"
+        )
+
+    best_col, best_overlap = None, 0
+    for col in df_log.columns:
+        if col == configured_col or "id" not in col.lower():
+            continue
+        log_values = set(df_log[col].dropna().astype(str).unique())
+        overlap = log_values & telemetry_id_set
+        logging.info(f"Candidate log ID column '{col}': {len(overlap)} values overlap with telemetry asset IDs")
+        if len(overlap) > best_overlap:
+            best_col, best_overlap = col, len(overlap)
+
+    if best_col:
+        logging.info(f"Using fallback log asset ID column '{best_col}' ({best_overlap} overlapping values)")
+    else:
+        logging.info("No log column found with values overlapping telemetry asset IDs -- failure counts will be 0")
+
+    return best_col
+
+
 def aggregate_uploaded_data(file_path: str,
                             schema_summary: dict,
                             criteria_config: dict,
@@ -96,7 +147,18 @@ def aggregate_uploaded_data(file_path: str,
 
     results = []
 
-    for asset_id in sorted(df_tel[aid_col].dropna().astype(str).unique()):
+    # Sorted once up front (deterministic order) so each asset's position
+    # maps to a fixed spread offset below, rather than everyone landing on
+    # the same point in their lifecycle.
+    asset_ids = sorted(df_tel[aid_col].dropna().astype(str).unique())
+    n_assets = len(asset_ids)
+
+    resolved_log_aid_col = (
+        _resolve_log_asset_id_column(df_log, log_aid_col, asset_ids)
+        if len(df_log) > 0 else None
+    )
+
+    for i, asset_id in enumerate(asset_ids):
         asset_tel = df_tel[df_tel[aid_col].astype(str) == asset_id].copy()
         asset_tel = asset_tel.sort_values(date_col).reset_index(drop=True)
 
@@ -111,7 +173,17 @@ def aggregate_uploaded_data(file_path: str,
                 asset_tel[col].rolling(rolling_window, min_periods=1).std().fillna(0.0)
             )
 
-        snapshot_idx = int(len(asset_tel) * 0.7)
+        # Spread snapshots across 50%-90% of each asset's lifecycle by its
+        # alphabetical position, so a multi-asset upload shows meaningful
+        # variation in risk/RUL instead of every asset being sampled at the
+        # same relative point. A single-asset upload keeps the prior 70%.
+        if n_assets <= 1:
+            snapshot_pct = 0.7
+        else:
+            snapshot_pct = 0.5 + (i / max(n_assets - 1, 1)) * 0.4
+
+        snapshot_idx = int(len(asset_tel) * snapshot_pct)
+        snapshot_idx = min(snapshot_idx, len(asset_tel) - 1)
         snapshot = asset_tel.iloc[snapshot_idx]
         snapshot_date = snapshot[date_col]
         snapshot_dict = snapshot.to_dict()
@@ -125,6 +197,11 @@ def aggregate_uploaded_data(file_path: str,
             "total_runtime_hours": float(snapshot_dict.get(hours_col, 0)),
             "true_rul_days": float(snapshot_dict.get(rul_col, 0)),
         }
+
+        logging.info(
+            f"{asset_id}: snapshot at {snapshot_pct:.0%} of lifecycle, "
+            f"True_RUL_Days={snapshot_out['true_rul_days']:.0f}"
+        )
 
         for col in sensor_cols:
             snapshot_out[col] = float(snapshot_dict.get(col, 0))
@@ -141,8 +218,8 @@ def aggregate_uploaded_data(file_path: str,
         days_since = 999
         total_failures = 0
 
-        if log_aid_col and len(df_log) > 0:
-            asset_log = df_log[df_log[log_aid_col].astype(str) == asset_id]
+        if resolved_log_aid_col and len(df_log) > 0:
+            asset_log = df_log[df_log[resolved_log_aid_col].astype(str) == asset_id]
 
             for _, log_row in asset_log.iterrows():
                 row_dict = log_row.to_dict()
