@@ -10,7 +10,7 @@ The dashboard scores industrial assets using the Analytic Hierarchy Process (AHP
 
 The backend supports two modes. A default fleet mode loads a pre-configured fleet of 5 KSB Calio 30-40 centrifugal pump assets from operational telemetry provided by the client, exposed via the `/ahp` and `/rul` API routes. **The dashboard UI currently renders only the second mode, uploaded asset mode** -- the default fleet endpoints remain fully functional for direct API use, but there is no toggle or view for them in the dashboard itself.
 
-In uploaded asset mode, the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria and scoring thresholds for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data. Claude's inferred criteria are always a draft: a human reviews and approves (or edits) them in the dashboard before they can drive any scoring or prediction, and every approval is recorded in an audit trail showing exactly what changed from Claude's suggestion.
+In uploaded asset mode, the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria, scoring thresholds, and a recommended preventive-maintenance interval for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data. Claude's inferred criteria are always a draft: a human reviews and approves (or edits) them in the dashboard before they can drive any scoring or prediction, and every approval is recorded in an audit trail showing exactly what changed from Claude's suggestion. Approval isn't a one-time checkpoint -- once criteria have been approved at least once, the user can freely re-run the risk/RUL analysis with different AHP weights with no extra approval step, and can reopen the review screen at any time to edit thresholds or the PM interval, which requires re-approving before the next run.
 
 The RUL model for uploaded assets also looks beyond single-sensor thresholds: it tracks trend direction and cross-sensor correlation over a rolling window, and separately runs deterministic threshold-breach detection on every scoring pass, with Claude only invoked on demand to explain a breach that has already been found. It also produces simplified MTBF (mean time between failures) and MTBM (recommended maintenance interval) estimates, plus a basic replace-vs-maintain economic comparison -- all deterministic approximations, not full statistical reliability models.
 
@@ -151,11 +151,11 @@ When a user uploads an Excel file (two sheets: Operational Telemetry and Failure
 
 1. Validates the file and detects column roles by keyword heuristics -- no specific column names are required.
 2. Queries the RAG knowledge base for relevant engineering standards, similar past CriteriaConfigs, and known failure cases.
-3. Calls the Anthropic API to infer 3-7 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges, enriched by retrieved domain knowledge. This is a **draft** -- it is stored provisionally but not yet trusted.
+3. Calls the Anthropic API to infer 3-7 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges and a recommended PM (preventive maintenance) interval inferred from the gaps between logged maintenance events (or from domain knowledge if fewer than 2 exist), enriched by retrieved domain knowledge. This is a **draft** -- it is stored provisionally but not yet trusted.
 4. Trains a fresh XGBoost model on the uploaded dataset (the model bundle is saved as unapproved).
-5. **The user reviews and approves the criteria** in the dashboard: criterion names, manual-input default scores, and threshold/penalty values are all editable (sensor column assignments are not, since changing them would invalidate the trained model). Approving locks the bundle and re-stores the SME-approved CriteriaConfig in the knowledge base as a new, versioned file for future retrieval -- Claude's original draft is never overwritten, and every approval (with a before/after diff of exactly what the SME changed) is appended to an audit log.
+5. **The user reviews and approves the criteria** in the dashboard: criterion names, manual-input default scores, threshold/penalty values, and the recommended PM interval are all editable (sensor column assignments are not, since changing them would invalidate the trained model). Approving locks the bundle and re-stores the SME-approved CriteriaConfig in the knowledge base as a new, versioned file for future retrieval -- Claude's original draft is never overwritten, and every approval (with a before/after diff of exactly what the SME changed) is appended to an audit log. Approval isn't one-and-done: the user can come back and click "Edit Criteria" at any time to change thresholds or the PM interval and re-approve, or just re-run the analysis with new AHP weights without touching criteria at all.
 6. Auto-generates a failure case document recording the asset type, sensors, failure modes, criteria, and training metrics.
-7. Scores each asset, runs deterministic threshold-breach detection, computes MTBF/MTBM/replace-vs-maintain estimates, and predicts RUL using the user's AHP matrix. Predictions are only available once the criteria have been approved.
+7. Scores each asset, runs deterministic threshold-breach detection, computes MTBF/MTBM/replace-vs-maintain estimates using the approved PM interval, and predicts RUL using the user's AHP matrix. The first prediction run requires the criteria to have been approved; subsequent weight-only re-runs don't require re-approving.
 
 All column name references flow through a central resolver module (`data/column_resolver.py`) -- no part of the pipeline hardcodes column names.
 
@@ -181,11 +181,15 @@ Both feed the RUL model as additional features and surface in the dashboard: a M
 
 For uploaded assets, every scoring pass also computes three simplified, deterministic approximations (no API calls, and explicitly not full Weibull statistical reliability models):
 
-- **Estimated MTBF** (mean time between failures) -- derived from the asset's observed failure count and total runtime, with a confidence label (low/medium/high) based on how many failures were actually observed.
-- **Recommended maintenance interval (MTBM)** -- a risk-adjusted fraction of the estimated MTBF, compared against the asset's current interval to recommend shortening, extending, or maintaining it, plus a suggested next maintenance date.
+- **Estimated MTBF** (mean time between failures) -- derived from the asset's observed failure count and total runtime, with a confidence label (low/medium/high) based on how many failures were actually observed. With zero recorded failures, MTBF is deliberately shown as unavailable (`N/A*`, with a footnote) rather than a fabricated estimate -- there's no data to estimate from.
+- **Recommended maintenance interval (MTBM)** -- a risk-adjusted fraction of the estimated MTBF, compared against the asset's **approved PM interval** (the SME-approved value if one was set during criteria review, else Claude's recommendation from schema inference, else a 90-day fallback) to recommend shortening, extending, or maintaining it, plus a suggested next maintenance date. When MTBF is unavailable, this recommends maintaining the current interval rather than showing nothing -- the safer default when there's no failure history to optimize against.
 - **Replace vs. maintain** -- a basic amortized-cost comparison between ongoing maintenance spend and an estimated (or uploaded) replacement cost.
 
-These appear in the dashboard as a "Maintenance Planning" section of the asset explanation popup (three cards plus a highlighted next-maintenance date) and as two extra columns, "Est. MTBF" and "PM Interval", in the risk ranking table.
+These appear in the dashboard as a "Maintenance Planning" section of the asset explanation popup (three cards -- MTBF, PM interval with its source and confidence, economic decision -- plus a highlighted next-maintenance date) and as two extra columns, "Est. MTBF" and "PM Interval", in the risk ranking table.
+
+### Health Status and Urgency
+
+Each uploaded asset gets a Health Status -- Critical, At Risk, Monitor, or Healthy -- computed from RUL first and risk factor second (an asset with very little remaining life reads Critical regardless of its risk score; risk factor only decides the status once RUL itself looks healthy). This single function drives everything urgency-related in the dashboard so nothing can disagree with anything else: the Health Status column and colored badge, the risk-ranking sort order (most urgent first, then soonest RUL within a tier), the summary counts banner, and the "assets require attention" banner at the top of the table (red for any Critical assets, orange for At Risk when there's no Critical). Risk Factor and RUL color pills, the breach status badge, and the MTBM shorten/extend/maintain indicator all share the same red/orange/yellow/green/grey palette for visual consistency.
 
 ### GenAI Explanations
 
@@ -238,8 +242,8 @@ GET `/ahp/assets` accepts query params: `weights` (repeated float), `c1_score` (
 | Method | Route | Description |
 |---|---|---|
 | POST | `/upload/analyze` | Upload Excel -> infer draft criteria, train model (unapproved), score assets |
-| POST | `/upload/approve-criteria` | SME approves (optionally edited) criteria -> locks the model bundle |
-| POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets (400 if not yet approved) |
+| POST | `/upload/approve-criteria` | SME approves (optionally edited) criteria + PM interval -> locks the model bundle; can be called again after "Edit Criteria" to re-approve |
+| POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets (400 if criteria have never been approved; weight-only re-runs after that don't need re-approval) |
 | POST | `/upload/explain` | Asset + AHP + RUL + asset type -> Claude explanation (includes multi-sensor correlation summary) |
 | POST | `/upload/explain-breach` | Asset + detected breaches -> on-demand Claude alerts for medium/high severity breaches |
 | GET | `/upload/audit-log` | Full approval audit trail -- every draft-vs-approved diff across all uploads |
@@ -315,8 +319,10 @@ If validation fails, the error message lists all column names detected in your f
 
 ```
 agelix-consulting-project-2026/
-+-- main.py                        # FastAPI entry point
++-- main.py                        # FastAPI entry point (also serves frontend/dist/ in production)
 +-- requirements.txt
++-- railway.toml                   # Railway build/start commands
++-- nixpacks.toml                  # Railway build environment
 +-- ahp/                           # AHP engine (do not modify)
 |   +-- criteria_scoring.py        # Scoring rules, convert_to_saaty(), clamp()
 |   +-- ahp_engine.py              # Matrix math, CR calculation
@@ -397,9 +403,15 @@ FastAPI backend and React frontend.
 2. Set environment variables in Railway dashboard:
    - ANTHROPIC_API_KEY — your Anthropic API key
    - VITE_API_BASE_URL — leave empty
-3. First deploy takes 5-10 minutes (installs deps, builds frontend, 
-   trains RUL model)
-4. Subsequent deploys take 2-3 minutes
+3. Deploy takes a few minutes (installs Python deps, generates 
+   telemetry data, trains the default RUL model)
+4. Subsequent deploys are similarly fast
+
+**The frontend is not built on Railway.** `frontend/dist/` is committed 
+to the repo and served directly by FastAPI (see `main.py`). If you 
+change anything under `frontend/src/`, run `npm run build` inside 
+`frontend/` locally and commit the resulting `frontend/dist/` changes 
+before pushing — otherwise Railway will keep serving the old build.
 
 ### Redeploying after changes
 git push origin main

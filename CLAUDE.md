@@ -26,26 +26,32 @@ Upload Mode:
   User Excel file (.xlsx)
   -> upload_schema.py (validation + schema_summary)
   -> retriever.py (RAG: standards, similar configs, failure cases)
-  -> schema_inferrer.py (Anthropic API + retrieved_context -> CriteriaConfig draft)
+  -> schema_inferrer.py (Anthropic API + retrieved_context + maintenance_event_dates
+     -> CriteriaConfig draft, including recommended_pm_interval_days/pm_interval_source/
+     pm_interval_confidence)
   -> knowledge_base.py (store draft CriteriaConfig for future retrieval)
   -> dynamic_train.py (trains XGBoost model on the draft config, bundle["approved"] = False)
-  -> SME Review & Approve gate (React: UploadPanel.jsx review screen)
+  -> SME Review & Approve gate (React: UploadPanel.jsx review screen, incl. PM interval editor)
      -> POST /upload/approve-criteria (validates edits, locks bundle["criteria_config"],
-        sets bundle["approved"] = True, re-stores the approved config via knowledge_base.py
-        as a new versioned file, logs the draft-vs-approved diff via rag/audit_log.py)
+        sets bundle["approved"] = True, stores bundle["approved_pm_interval_days"] if given,
+        re-stores the approved config via knowledge_base.py as a new versioned file,
+        logs the draft-vs-approved diff via rag/audit_log.py)
   -> column_resolver.py (all column lookups, always against the approved config)
   -> dynamic_aggregator.py (asset snapshots + rolling + multi-sensor trend/correlation features)
   -> dynamic_criteria_scorer.py (AHP scores from the approved CriteriaConfig)
   -> threshold_breach_detector.py (deterministic threshold/penalty breach detection, no API call)
-  -> mtbf_mtbm.py (deterministic MTBF / MTBM / replace-vs-maintain estimates, no API call)
+  -> mtbf_mtbm.py (deterministic MTBF / MTBM / replace-vs-maintain estimates, no API call;
+     PM interval read from bundle["approved_pm_interval_days"] or the config's recommended value)
   -> dynamic_feature_engineering.py (feature vector: rolling + correlation + breach features)
-  -> dynamic_ml_rul_model.py (RUL -- POST /upload/predict-all requires bundle["approved"] == True)
+  -> dynamic_ml_rul_model.py (RUL -- POST /upload/predict-all requires criteria to have been
+     approved at least once; weight-only re-runs reuse the approved config without re-approving)
   -> auto-generate failure case markdown (docs/failure_cases/)
   -> retriever.py (RAG: failure precedents, maintenance guidance)
   -> rul_explainer.py (Claude explanation with retrieved_context + correlation_summary)
   -> breach_explainer.py (on-demand Claude alert for high/medium severity breaches only)
   -> FastAPI (upload/api.py)
-  -> React dashboard (Dashboard.jsx's only rendered view)
+  -> React dashboard (Dashboard.jsx's only rendered view; Edit Criteria reopens the review
+     screen for threshold/PM-interval changes without discarding existing results)
 
 RAG Knowledge Pipeline:
   docs/manuals/ (PDF manuals)
@@ -69,12 +75,16 @@ Audit Trail (parallel to the above, not part of retrieval):
 ```
 agelix-consulting-project-2026/
 |
-+-- main.py                                # FastAPI entry point (mounts ahp + rul + upload + rag routers)
++-- main.py                                # FastAPI entry point (mounts ahp + rul + upload + rag routers;
+|                                          # also serves frontend/dist/ as static files in production)
 +-- CLAUDE.md
 +-- README.md
 +-- .env                                   # never commit
 +-- .env.example
 +-- .gitignore
++-- .dockerignore
++-- railway.toml                           # Railway build/start commands (see Deployment)
++-- nixpacks.toml                          # Railway build environment (python311, nodejs_20, libomp)
 +-- requirements.txt
 |
 +-- ahp/
@@ -597,9 +607,11 @@ Validates uploaded Excel files against the two-sheet contract. Detects column ro
 
 ### schema_inferrer.py
 
-Makes one Anthropic API call (claude-sonnet-4-6, max_tokens=2500) with the full schema_summary. Accepts an optional `retrieved_context: dict` parameter. When provided and `retrieval_available` is True, a RETRIEVED DOMAIN KNOWLEDGE block is injected into the prompt between the sensor statistics and TASK sections, containing `standards_chunks`, `similar_configs`, and `failure_case_chunks` from the RAG pipeline. Claude returns a CriteriaConfig JSON dict -- the single source of truth for all downstream files. After parsing, validates every column name Claude returns against schema_summary to prevent hallucinated names from breaking the pipeline. Raises `RuntimeError` on API failure or invalid response. All existing behavior is unchanged when `retrieved_context` is None.
+Makes one Anthropic API call (claude-sonnet-4-6, max_tokens=2500) with the full schema_summary. Accepts an optional `retrieved_context: dict` parameter and an optional `file_path: str` parameter (used only to compute `maintenance_event_dates`, see below). When `retrieved_context` is provided and `retrieval_available` is True, a RETRIEVED DOMAIN KNOWLEDGE block is injected into the prompt between the sensor statistics and TASK sections, containing `standards_chunks`, `similar_configs`, and `failure_case_chunks` from the RAG pipeline. Claude returns a CriteriaConfig JSON dict -- the single source of truth for all downstream files. After parsing, validates every column name Claude returns against schema_summary to prevent hallucinated names from breaking the pipeline. Raises `RuntimeError` on API failure or invalid response. All existing behavior is unchanged when `retrieved_context`/`file_path` are None.
 
 **failure_event_values fallback:** If Claude returns an empty `failure_event_values` list, the inferrer automatically populates it by scanning `schema_summary["log_event_type_values"]` for entries containing "fail", "fault", "error", or "breakdown" (case-insensitive). If no keyword matches, the first value in the list is used as fallback. Only raises an error if `log_event_type_values` itself is empty.
+
+**PM interval inference:** Before building the prompt, `_compute_maintenance_event_dates(file_path, schema_summary)` loads the log sheet directly (schema_summary alone doesn't carry row-level data) and returns sorted ISO date strings for every row whose event type value is NOT in the set of `log_event_type_values` containing "fail"/"fault"/"error" (case-insensitive) -- i.e. the maintenance (non-failure) events. Returns `[]` on any missing column or read failure; this is best-effort prompt context, never a reason to block inference. The dates are injected into the FAILURE & MAINTENANCE LOG section of the prompt with an instruction to infer a recommended PM interval from the intervals between them (or from domain knowledge about the asset type if fewer than 2 exist). See Upload Pipeline > PM Interval Inference and Approval for the full field set and downstream flow.
 
 **Markdown fence stripping:** Claude's response is stripped of any leading ` ```json ` / ` ``` ` fences before JSON parsing.
 
@@ -676,15 +688,16 @@ explain_all_breaches(asset_snapshot, breaches, criteria_config, retrieved_contex
 
 ### SME Criteria Approval Gate
 
-Claude's inferred `CriteriaConfig` is a **draft suggestion**, never authoritative on its own. After `/upload/analyze` trains a model, the bundle is saved with `bundle["approved"] = False`. The dashboard shows a "Review and Approve Criteria" screen (see Frontend Architecture) where a human can edit criterion names, `ui_label`, `default_score` (manual criteria), and threshold/penalty band values -- `primary_column` and sensor assignments are always read-only, since changing them would invalidate the already-trained model.
+Claude's inferred `CriteriaConfig` is a **draft suggestion**, never authoritative on its own. After `/upload/analyze` trains a model, the bundle is saved with `bundle["approved"] = False`. The dashboard shows a "Review and Approve Criteria" screen (see Frontend Architecture) where a human can edit criterion names, `ui_label`, `default_score` (manual criteria), threshold/penalty band values, and the recommended PM interval (see PM Interval Inference and Approval below) -- `primary_column` and sensor assignments are always read-only, since changing them would invalidate the already-trained model.
 
 ```
 POST /upload/approve-criteria
-  {"criteria_config": {...edited...}, "model_path": "rul/dynamic_model.pkl", "file_path": "..."}
+  {"criteria_config": {...edited...}, "model_path": "rul/dynamic_model.pkl", "file_path": "...",
+   "previous_config": {...} | null, "approved_pm_interval_days": int | null}
 ```
-Validates: 3-7 criteria; every criterion has `id`/`name`/`description`/`manual_input`; every non-manual criterion has `primary_column` (must still exist in the bundle's `schema_summary["sensor_columns"]`) and at least 2 thresholds; every threshold `score` is a number between 1 and 10. On success, overwrites `bundle["criteria_config"]`, sets `bundle["approved"] = True`, re-dumps the bundle, and calls `knowledge_base.store_criteria_config()` with the **approved** config so RAG retrieval for future uploads is built on human-validated data, not Claude's raw draft. Returns `{"status": "approved", "criteria_config": {...}, "changes_from_original": int}` where the change count is a per-field diff (`name`, `ui_label`, `default_score`, `thresholds`, `penalties`) across all criteria.
+Validates: 3-7 criteria; every criterion has `id`/`name`/`description`/`manual_input`; every non-manual criterion has `primary_column` (must still exist in the bundle's `schema_summary["sensor_columns"]`) and at least 2 thresholds; every threshold `score` is a number between 1 and 10. `previous_config`, when provided, is diffed against instead of `bundle["criteria_config"]` -- on a re-approval (see below) this lets the change count and audit log reflect what changed *this round*, not the drift from Claude's original draft. `approved_pm_interval_days`, when provided and within 7-730 days, is stored as `bundle["approved_pm_interval_days"]`; an invalid or missing value leaves the bundle's existing PM interval state untouched (never overwritten with garbage). On success, overwrites `bundle["criteria_config"]`, sets `bundle["approved"] = True`, re-dumps the bundle, and calls `knowledge_base.store_criteria_config()` with the **approved** config so RAG retrieval for future uploads is built on human-validated data, not Claude's raw draft. Returns `{"status": "approved", "criteria_config": {...}, "changes_from_original": int, "approved_pm_interval_days": int | null, "approved_at": "..."}`.
 
-`POST /upload/predict-all` loads `criteria_config` exclusively from the model bundle (never from the request body) and returns HTTP 400 if `bundle.get("approved")` is not `True`: `"Criteria have not been approved. Complete the review step before running predictions."` This is the same CR > 0.10 style hard gate applied to an unapproved CriteriaConfig -- there is no way to bypass it from the API layer, and the frontend enforces the identical rule by disabling the Run button.
+**Iterating after the first approval:** approval is not a one-time gate. Once a bundle has been approved at least once, the dashboard lets the user freely re-run predictions with different AHP weights without re-approving anything (`POST /upload/predict-all` accepts an optional `approved_criteria_config` in the body -- when present it's used directly, re-validated the same way as the approve-criteria endpoint, and no bundle-approval check is applied). Only editing criteria (thresholds, names, defaults, PM interval) requires walking back through `POST /upload/approve-criteria` again -- clicking "Edit Criteria" in the dashboard just clears the client-side `criteriaApproved` flag and reopens the review screen pre-populated with the last-approved values; it does not touch the server. If `approved_criteria_config` is omitted from a `/upload/predict-all` call, the endpoint falls back to `bundle["criteria_config"]` and still hard-blocks with HTTP 400 (`"Criteria have not been approved. Complete the review step before running predictions."`) unless `bundle["approved"]` is `True` -- so the *first* approval is still always required before any prediction can run; it's only the *repeat* full-cycle re-approval that re-running weights alone no longer needs.
 
 ### Versioned CriteriaConfig Storage
 
@@ -718,13 +731,25 @@ calculate_mtbm(mtbf_days, risk_factor, current_interval_days=90) -> dict
 calculate_replace_vs_maintain(mtbf_days, maintenance_cost_last_year, asset_snapshot) -> dict
 ```
 
-`calculate_mtbf()` estimates days between failures from `total_failure_count` and `total_runtime_hours` (using `operating_hours_per_day` from the snapshot, defaulting to 22 if absent): `>= 2` failures divides total operating days by the failure count (`basis="observed_failures"`); exactly `1` failure divides `total_runtime_hours` by 24 as a rough single-data-point approximation (`basis="single_failure"`); `0` failures returns `mtbf_days=None` (`basis="insufficient_data"`). `mtbf_confidence` is `"high"` at 5+ failures, `"medium"` at 2-4, `"low"` below that. Returns `{"mtbf_days", "mtbf_confidence", "mtbf_note", "basis"}`.
+`calculate_mtbf()` estimates days between failures from `total_failure_count` and `total_runtime_hours` (using `operating_hours_per_day` from the snapshot, defaulting to 22 if absent): `>= 2` failures divides total operating days by the failure count (`basis="observed_failures"`); exactly `1` failure divides `total_runtime_hours` by 24 as a rough single-data-point approximation (`basis="single_failure"`); `0` failures returns `mtbf_days=None` (`basis="insufficient_data"`, `mtbf_note="Insufficient failure history -- MTBF unavailable"`) -- this is a deliberate choice to show an honest "unavailable" rather than a fabricated estimate from an asset with zero observed failures. `mtbf_confidence` is `"high"` at 5+ failures, `"medium"` at 2-4, `"low"` below that (so `0` and `1` failures both read `"low"`). Returns `{"mtbf_days", "mtbf_confidence", "mtbf_note", "basis"}`.
 
-`calculate_mtbm()` takes `mtbf_days * 0.6` as a base recommended interval (industry heuristic: maintain at 60% of MTBF), then shortens it by up to 40% as `risk_factor` (1-9 Saaty scale) rises: `mtbm_adjusted = base * (1 - ((risk_factor - 1) / 8) * 0.4)`. Compares the rounded result to `current_interval_days` (passed in from the asset's `days_since_last_event` at the call site) to recommend `"shorten"` (< 80% of current), `"extend"` (> 120% of current), or `"maintain"`. Returns `{"mtbm_recommended_days", "current_interval_days", "recommendation", "recommendation_text", "next_maintenance_date"}` (ISO date, today + recommended days). If `mtbf_days` is `None`, every field is `None` except `recommendation = "insufficient_data"`.
+`calculate_mtbm()` takes `mtbf_days * 0.6` as a base recommended interval (industry heuristic: maintain at 60% of MTBF), then shortens it by up to 40% as `risk_factor` (1-9 Saaty scale) rises: `mtbm_adjusted = base * (1 - ((risk_factor - 1) / 8) * 0.4)`. Compares the rounded result to `current_interval_days` (see below for how this is resolved) to recommend `"shorten"` (< 80% of current), `"extend"` (> 120% of current), or `"maintain"`. Returns `{"mtbm_recommended_days", "current_interval_days", "recommendation", "recommendation_text", "next_maintenance_date"}` (ISO date, today + recommended days). If `mtbf_days` is `None` (insufficient failure history), it does **not** return an all-`None`/"insufficient_data" result -- instead it returns `mtbm_recommended_days = current_interval_days`, `recommendation = "maintain"`, `recommendation_text = "Insufficient failure history for interval optimization -- maintain current schedule"`, and `next_maintenance_date = today + current_interval_days`. This is intentionally the more honest default: with no failure data to optimize against, "keep doing what you're doing" is a safer recommendation than either silently estimating one or showing nothing.
 
 `calculate_replace_vs_maintain()` opportunistically searches `asset_snapshot` for any key (excluding `maintenance_cost_last_year` itself, to avoid matching the input against itself) whose name contains "replacement", "value", or "cost" (case-insensitive) and holds a numeric value, using it as `estimated_replacement_cost`; falls back to a flagged $50,000 default (`replacement_cost_estimated=True`) if nothing matches. Amortizes that cost over `max(mtbf_days / 365, 1)` years and compares it to `annual_maintenance_cost`: `decision="replace"` if maintenance cost exceeds the amortized replacement cost per year, else `"maintain"`; `"insufficient_data"` if `mtbf_days` is `None`.
 
-`upload/api.py`'s `POST /upload/predict-all` calls all three per asset and attaches `mtbf`, `mtbm`, `replace_vs_maintain` to each result (see FastAPI Endpoints). The frontend shows these in a "Maintenance Planning" section of the explain popup (three cards -- MTBF with confidence badge, PM interval with shorten/extend/maintain badge, economic decision -- plus a bold "Next Recommended Maintenance" date) and as two extra risk-ranking table columns, "Est. MTBF" and "PM Interval" (colored arrow: red down for shorten, green up for extend, grey dash for maintain).
+`upload/api.py`'s `POST /upload/predict-all` calls all three per asset and attaches `mtbf`, `mtbm`, `replace_vs_maintain` to each result (see FastAPI Endpoints). `current_interval_days` is resolved **once per predict-all call** (not per-asset) as `bundle.get("approved_pm_interval_days", criteria_config.get("recommended_pm_interval_days", 90))` -- see PM Interval Inference and Approval below; the `90` here is only the last-resort fallback, never a bare default in normal operation. The frontend shows these in a "Maintenance Planning" section of the explain popup (three cards -- MTBF with confidence badge, PM interval with shorten/extend/maintain badge plus "Based on: {pm_interval_source} ({pm_interval_confidence} confidence)" and "Current approved interval: {days} days", economic decision -- plus a bold "Next Recommended Maintenance" date) and as two extra risk-ranking table columns, "Est. MTBF" (shows `N/A*` with a footnote -- "Minimum 2 observed failures required for MTBF estimation" -- when `mtbf_days` is `None`) and "PM Interval" (colored arrow: red down for shorten, green up for extend, grey dash for maintain).
+
+### PM Interval Inference and Approval
+
+The preventive-maintenance interval used by `mtbf_mtbm.py`'s `calculate_mtbm()` is inferred by Claude at schema-inference time, reviewed and optionally overridden by the SME alongside the AHP criteria, and only then does it drive scoring -- the same draft-until-approved pattern as the rest of the CriteriaConfig.
+
+**Inference (`schema_inferrer.py`):** the prompt is given `maintenance_event_dates` (see schema_inferrer.py above) and asked to infer an interval from the gaps between them, or fall back to domain knowledge about the asset type if fewer than 2 maintenance events exist. Claude's response must include `recommended_pm_interval_days` (int), `pm_interval_source` (`"inferred_from_log"` | `"domain_knowledge"` | `"default"`), and `pm_interval_confidence` (`"high"` | `"medium"` | `"low"`).
+
+**Validation (`_apply_pm_interval_defaults()`):** runs after `_validate_config()` on every inference. `recommended_pm_interval_days` missing, non-numeric, or outside 7-730 days is forced to 90 and `pm_interval_source` is forced to `"default"` (never leave a stale source label on a value that was just overridden). `pm_interval_source`/`pm_interval_confidence` are clamped to their allowed enum values, defaulting to `"default"`/`"low"` if invalid or absent. These three fields are always present on the returned CriteriaConfig -- see CriteriaConfig Schema.
+
+**Review (`UploadPanel.jsx`):** the review screen shows a "Recommended PM Interval" card (styled identically to the criteria cards) above the criteria list, with Claude's suggestion, a source badge ("Inferred from Log" in green, "Default" in grey), a confidence dot (green/yellow/grey for high/medium/low), and an editable number input (7-730, seeded from the previously-approved value on re-edit or Claude's recommendation on first review). The edited value is held in local `approvedPmInterval` state and sent as `approved_pm_interval_days` on `POST /upload/approve-criteria`.
+
+**Storage and resolution:** `approve-criteria` stores a valid value as `bundle["approved_pm_interval_days"]` (see SME Criteria Approval Gate). `POST /upload/predict-all` resolves `current_interval_days` once per call as `bundle.get("approved_pm_interval_days", criteria_config.get("recommended_pm_interval_days", 90))` -- the SME-approved value if one was ever set, else Claude's recommendation, else the last-resort `90`. This is a single value applied to every asset in the upload (not a per-asset value), and feeds `calculate_mtbm()`'s `current_interval_days` parameter directly.
 
 ---
 
@@ -822,6 +847,10 @@ When `retrieved_context` is provided and `retrieval_available` is True, a RETRIE
 
   "failure_event_values": ["<exact string values that indicate failure in log>"],
 
+  "recommended_pm_interval_days": 90,
+  "pm_interval_source": "inferred_from_log",
+  "pm_interval_confidence": "medium",
+
   "criteria": [
     {
       "id": "C1",
@@ -861,7 +890,7 @@ When `retrieved_context` is provided and `retrieval_available` is True, a RETRIE
 
 All column names in CriteriaConfig must exactly match column names present in the uploaded file. `schema_inferrer.py` validates this after every API call. No downstream file may hardcode a column name -- all lookups go through `column_resolver.py`.
 
-This is the shape Claude produces as a **draft**. It is not authoritative until a human approves it via `POST /upload/approve-criteria` (see Upload Pipeline > SME Criteria Approval Gate) -- only then does `dynamic_criteria_scorer.py`, `dynamic_aggregator.py`, and the RUL model treat it as final. The SME may edit `name`, `ui_label`, `default_score`, and the values inside `thresholds`/`penalties`; `primary_column`, `secondary_columns`, and `column_roles` are never editable in the review screen because they are load-bearing for the already-trained model.
+This is the shape Claude produces as a **draft**. It is not authoritative until a human approves it via `POST /upload/approve-criteria` (see Upload Pipeline > SME Criteria Approval Gate) -- only then does `dynamic_criteria_scorer.py`, `dynamic_aggregator.py`, and the RUL model treat it as final. The SME may edit `name`, `ui_label`, `default_score`, and the values inside `thresholds`/`penalties`; `primary_column`, `secondary_columns`, and `column_roles` are never editable in the review screen because they are load-bearing for the already-trained model. `recommended_pm_interval_days`/`pm_interval_source`/`pm_interval_confidence` are Claude's PM interval suggestion (see Upload Pipeline > PM Interval Inference and Approval) -- the SME's edited interval is not written back into this dict; it's sent separately as `approved_pm_interval_days` and lives on the model bundle, not the CriteriaConfig JSON.
 
 ---
 
@@ -935,7 +964,7 @@ All correlation/trend/breach features degrade gracefully to 0.0 via `column_reso
 
 Train/test split: hold out asset with most rows. Same XGBoost params as default fleet. `dynamic_train.py` computes `detect_breaches()` and `compute_correlation_features()` per training row (same trailing-14-row window logic as inference) so training and inference see an identical feature distribution.
 
-Model bundle saved as dict: `{"model", "feature_names", "criteria_config", "schema_summary", "approved"}`. Feature vector length validated against `bundle["feature_names"]` at inference time. `approved` starts `False` at training time and is flipped to `True` only by `POST /upload/approve-criteria` (see Upload Pipeline > SME Criteria Approval Gate) -- `POST /upload/predict-all` refuses to run against an unapproved bundle.
+Model bundle saved as dict: `{"model", "feature_names", "criteria_config", "schema_summary", "approved"}`, plus `"approved_pm_interval_days"` once an SME approves a PM interval (absent until then). Feature vector length validated against `bundle["feature_names"]` at inference time. `approved` starts `False` at training time and is flipped to `True` only by `POST /upload/approve-criteria` and never flipped back -- `POST /upload/predict-all` refuses to run against a bundle that has never been approved, but a since-approved bundle stays usable for weight-only re-runs even while the SME is mid-edit on a new round of criteria changes (see Upload Pipeline > SME Criteria Approval Gate).
 
 Model location: `rul/dynamic_model.pkl`.
 
@@ -1014,13 +1043,17 @@ POST /rul/explain body:
 
 POST /upload/approve-criteria body:
 ```json
-{"criteria_config": {}, "model_path": "rul/dynamic_model.pkl", "file_path": "data/raw/uploads/file.xlsx"}
+{"criteria_config": {}, "model_path": "rul/dynamic_model.pkl", "file_path": "data/raw/uploads/file.xlsx",
+ "previous_config": {} | null, "approved_pm_interval_days": 60}
 ```
+`previous_config` and `approved_pm_interval_days` are both optional. `previous_config` is the client's last-approved config (sent on a re-approval so the diff is computed against it, not the original bundle contents -- see SME Criteria Approval Gate); omitted or `null` on a first approval. `approved_pm_interval_days`, if outside 7-730, is silently ignored (the bundle's existing PM interval state is left as-is, never overwritten with an invalid value).
+
 Response:
 ```json
-{"status": "approved", "criteria_config": {}, "changes_from_original": 2, "approved_at": "2026-07-16T21:47:38"}
+{"status": "approved", "criteria_config": {}, "changes_from_original": 2,
+ "approved_pm_interval_days": 60, "approved_at": "2026-07-16T21:47:38"}
 ```
-Returns HTTP 422 with a specific message if validation fails (wrong criteria count, missing fields, unknown `primary_column`, too few thresholds, out-of-range score). `approved_at` is the timestamp `rag/audit_log.py` logged the approval under (empty string if logging itself failed -- logging never blocks the approval).
+Returns HTTP 422 with a specific message if validation fails (wrong criteria count, missing fields, unknown `primary_column`, too few thresholds, out-of-range score). `approved_at` is the timestamp `rag/audit_log.py` logged the approval under (empty string if logging itself failed -- logging never blocks the approval). `approved_pm_interval_days` in the response reflects whatever actually ended up stored on the bundle (`null` if never set or if this call's value was invalid), not just an echo of the request.
 
 GET /upload/audit-log response:
 ```json
@@ -1032,9 +1065,10 @@ GET /upload/audit-log response:
 POST /upload/predict-all body:
 ```json
 {"file_path": "data/raw/uploads/file.xlsx", "weights": [0.35, 0.25, 0.2, 0.12, 0.08],
- "cr": 0.07, "manual_scores": {"C1": 7, "C4": 6}, "model_path": "rul/dynamic_model.pkl"}
+ "cr": 0.07, "manual_scores": {"C1": 7, "C4": 6}, "model_path": "rul/dynamic_model.pkl",
+ "approved_criteria_config": {} | null}
 ```
-`weights` length must match the number of criteria in the stored CriteriaConfig (3-7). The endpoint uses `range(n_criteria)` internally -- never hardcodes 5. `criteria_config` is loaded from the model bundle, never accepted in this body. Returns HTTP 400 if `bundle["approved"]` is not `True`. Each returned asset also includes `correlation_summary` (`composite_stress_index`, `top_correlated_pairs`, `sensors_degrading_together`), `breaches` (list), `breach_summary` (counts + `alert_required`), and `mtbf`/`mtbm`/`replace_vs_maintain` (see Upload Pipeline > Maintenance Planning).
+`weights` length must match the number of criteria in the stored CriteriaConfig (3-7). The endpoint uses `range(n_criteria)` internally -- never hardcodes 5. `approved_criteria_config` is optional: when provided (the frontend always sends its current `approvedCriteriaConfig` once one exists), it's used directly after re-validation, letting weight-only re-runs skip a full re-approval cycle; when omitted, `criteria_config` falls back to `bundle["criteria_config"]` and the endpoint returns HTTP 400 unless `bundle["approved"]` is `True`. Either way, the first approval is always required before any prediction can run -- see SME Criteria Approval Gate. Each returned asset also includes `correlation_summary` (`composite_stress_index`, `top_correlated_pairs`, `sensors_degrading_together`), `breaches` (list), `breach_summary` (counts + `alert_required`), and `mtbf`/`mtbm`/`replace_vs_maintain` (see Upload Pipeline > Maintenance Planning and PM Interval Inference and Approval).
 
 POST /upload/explain body:
 ```json
@@ -1092,31 +1126,46 @@ Delete triggers `build_knowledge_base(force_rebuild=True)` to purge stale embedd
 **All state is uploaded-mode state (owned by the `useUpload` hook, lifted into Dashboard.jsx):**
 ```javascript
 criteriaConfig:          null   // Claude's draft, from /upload/analyze -- passed only to UploadPanel
-criteriaApproved:        false  // flips true after /upload/approve-criteria succeeds
-approvedCriteriaConfig:  null   // the SME-approved config returned by approve-criteria
-approvalChanges:         0      // per-field diff count vs. the draft
+criteriaApproved:        false  // true only while the currently-edited config matches what's
+                                 // approved server-side; false while "Edit Criteria" is open
+approvedCriteriaConfig:  null   // the SME-approved config returned by approve-criteria, with
+                                 // approved_pm_interval_days merged in client-side for convenience
+approvalChanges:         0      // per-field diff count vs. the previous approved version (or
+                                 // Claude's draft, on the first approval)
+hasResults:              false  // true once predict-all has ever succeeded; drives the
+                                 // "Run Risk and RUL Analysis" vs "Re-run Analysis" button label
 predictedAssets:         []     // includes correlation_summary, breaches, breach_summary,
                                  // mtbf, mtbm, replace_vs_maintain per asset
 uploadedExplanations:    {}     // keyed by asset_id
 uploadedBreachAlerts:    {}     // keyed by asset_id, from /upload/explain-breach
 uploadedAhpResult:       null   // { weights, cr, valid } from AHPMatrix's onWeightsUpdate
 ```
-Dashboard computes `activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig` and passes that (not the raw draft) to `AHPMatrix` and `DynamicAssetTable` -- everything downstream of approval sees the SME-approved version. `UploadPanel` alone still receives the raw `criteriaConfig` draft, since its own review screen needs the original for the "Reset to Claude's Suggestions" button.
+Dashboard computes `activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig` and passes that (not the raw draft) to `AHPMatrix` and `DynamicAssetTable` -- everything downstream of approval sees the SME-approved version, including whenever `criteriaApproved` is momentarily `false` during an edit (this value is never reset to `null`, only replaced by a newer approval). `UploadPanel` alone also receives the raw `criteriaConfig` draft and `approvedCriteriaConfig`, since its own review screen needs both: the original for the "Reset to Claude's Suggestions" button, the latest approval to pre-populate a re-edit.
 
 ### Dynamic Behavior
 
 When file uploaded and analyzed:
   criteriaConfig set (draft) -> uploadedAssets populated with scores (no RUL yet) ->
-  criteriaApproved reset to false, approvedCriteriaConfig reset to null
+  criteriaApproved reset to false, approvedCriteriaConfig reset to null, hasResults reset to false
 
-When criteria are approved:
-  POST /upload/approve-criteria -> criteriaApproved = true, approvedCriteriaConfig set,
-  approvalChanges set -> Run Risk and RUL Analysis button unlocks (still requires ahpValid too)
+When criteria are approved (first time or after an edit):
+  POST /upload/approve-criteria (sending previous_config + approved_pm_interval_days) ->
+  criteriaApproved = true, approvedCriteriaConfig set, approvalChanges set ->
+  Run/Re-run Analysis button unlocks (still requires ahpValid too)
 
 When predict-all runs:
-  blocked client-side unless criteriaApproved -> predictedAssets set with RUL values in years
-  (converted to days at display layer), each asset carrying correlation_summary + breaches +
-  breach_summary + mtbf + mtbm + replace_vs_maintain
+  blocked client-side unless approvedCriteriaConfig exists (not just criteriaApproved, since
+  weight-only re-runs can fire while criteriaApproved is momentarily false -- though the UI only
+  ever shows the button while criteriaApproved is true) -> sends the current AHP weights/cr plus
+  approved_criteria_config -> predictedAssets set with RUL values in years (converted to days at
+  display layer), each asset carrying correlation_summary + breaches + breach_summary + mtbf +
+  mtbm + replace_vs_maintain -> hasResults set to true
+
+When "Edit Criteria" is clicked:
+  criteriaApproved -> false (client-side only, no API call) -> UploadPanel reopens the review
+  screen pre-populated with the current approvedCriteriaConfig (criteria + PM interval) ->
+  predictedAssets/hasResults are untouched, so DynamicAssetTable keeps showing the last results
+  until the next successful predict-all
 
 When explain requested:
   uploadedExplanations updated for that asset_id with sensor_context from the approved CriteriaConfig
@@ -1128,19 +1177,22 @@ When breach alerts requested:
 ### Dashboard Layout (top to bottom)
 
 1. AHPMatrix (only rendered after a criteria config -- draft or approved -- is available)
-2. UploadPanel (file drop zone + Review & Approve Criteria screen + predict button, gated on approval)
+2. UploadPanel (file drop zone + Review & Approve Criteria screen, incl. PM interval card +
+   Run/Re-run Analysis + Edit Criteria buttons, gated on approval)
 3. KnowledgeBasePanel (collapsible; manuals/failure cases/criteria configs + Approval Audit Log)
-4. DynamicAssetTable (only rendered when predictedAssets.length > 0; includes breach status
-   column, MTBF/PM Interval columns, high-severity banner, and per-asset Explain / Breach Alerts popups)
+4. DynamicAssetTable (only rendered when predictedAssets.length > 0; Health Status column +
+   summary counts banner, breach status column, MTBF/PM Interval columns, urgency banner
+   (Critical in red / At Risk in orange, from the same getHealthStatus() as the column), and
+   per-asset Explain / Breach Alerts popups)
 
 ### Component Inventory
 
 | Component | File | Rendered by Dashboard.jsx? | Purpose |
 |---|---|---|---|
 | AHPMatrix | AHPMatrix.jsx | Yes | NxN pairwise matrix with CR validation, N = criteria count from CriteriaConfig (3-7) |
-| UploadPanel | UploadPanel.jsx | Yes | File drop zone + Review & Approve Criteria screen (editable names/thresholds/penalties/default scores, Reset + Approve, locks on approval) + predict button gated on `criteriaApproved` |
+| UploadPanel | UploadPanel.jsx | Yes | File drop zone + Review & Approve Criteria screen (editable names/thresholds/penalties/default scores + PM interval card styled like the criteria cards, Reset + Approve) + Run/Re-run Analysis + Edit Criteria buttons once approved |
 | KnowledgeBasePanel | KnowledgeBasePanel.jsx | Yes | Collapsible RAG document manager (manuals/failure cases/criteria configs) + Approval Audit Log viewer; uses `useKnowledgeBase` internally |
-| DynamicAssetTable | DynamicAssetTable.jsx | Yes | Risk ranking + RUL + MTBF/PM Interval columns + breach status column, high-severity banner, and Explain / Breach Alerts popups (Multi-Sensor Analysis + Maintenance Planning + breach metrics) |
+| DynamicAssetTable | DynamicAssetTable.jsx | Yes | Risk ranking sorted by health urgency (not raw risk factor) + Health Status column/badge + summary counts banner + RUL/MTBF/PM Interval columns + breach status column + urgency banner, and Explain / Breach Alerts popups (Multi-Sensor Analysis + Maintenance Planning with PM interval source/confidence + breach metrics). All urgency coloring (Health Status badge, Risk Factor/RUL pills, breach badge, MTBM recommendation) is sourced from one `COLORS` constant (`critical`/`at_risk`/`monitor`/`healthy`/`neutral`) so every visual element agrees on what's urgent |
 | ManualScoreInputs | ManualScoreInputs.jsx | No (orphaned) | C1/C4 manual inputs component; uploaded mode edits `default_score` inline inside UploadPanel's review cards instead |
 | DataUpload | DataUpload.jsx | No (orphaned) | CSV/JSON upload for KSB pump data |
 | WeightDisplay | WeightDisplay.jsx | No (orphaned) | Recharts bar chart of criterion weights (default fleet) |
@@ -1158,7 +1210,7 @@ When breach alerts requested:
 | Hook | File | Used by Dashboard.jsx? | State Managed |
 |---|---|---|---|
 | useAHP | useAHP.js | Indirectly (via AHPMatrix) | AHP matrix calculation API calls |
-| useUpload | useUpload.js | Yes | Upload flow state: analyze, criteria approval (`criteriaApproved`, `approvedCriteriaConfig`, `approvalChanges`, `approveCriteria()`), predict-all (gated on approval), explain, explain-breach |
+| useUpload | useUpload.js | Yes | Upload flow state: analyze, criteria approval (`criteriaApproved`, `approvedCriteriaConfig`, `approvalChanges`, `approveCriteria(config, pmIntervalDays)`), `editCriteria()` (clears `criteriaApproved` without touching results), `hasResults`, predict-all (gated on `approvedCriteriaConfig` existing, sends the current weights/cr + approved config every call), explain, explain-breach |
 | useKnowledgeBase | useKnowledgeBase.js | Yes (via KnowledgeBasePanel) | RAG document lists, upload/delete status, audit log fetch (`auditLog`, `auditLogStatus`, `fetchAuditLog()`) |
 | useRiskScores | useRiskScores.js | No (orphaned) | GET /ahp/assets with current weights (default fleet) |
 | useRUL | useRUL.js | No (orphaned) | Auto-predict + on-demand explain (default fleet) |
@@ -1236,7 +1288,13 @@ API_BASE_URL=http://localhost:8000
 | Only .xlsx files are accepted for upload | CSV parsing adds complexity with no benefit given the two-sheet requirement |
 | Minimum 10 telemetry rows required | Insufficient data produces unreliable rolling features and model training |
 | CriteriaConfig from Claude is a draft until `POST /upload/approve-criteria` sets `bundle["approved"] = True` | Claude's output must be human-validated before it drives any risk/RUL calculation |
-| `POST /upload/predict-all` loads `criteria_config` only from the approved model bundle, never the request body | Prevents an unapproved or stale config from ever driving predictions |
+| `POST /upload/predict-all` accepts an optional `approved_criteria_config` in the request body (re-validated server-side); without it, falls back to the model bundle and requires `bundle["approved"] == True` | First approval is always required before any prediction can run; once approved, weight-only re-runs don't need a full re-approval cycle |
+| Editing criteria (thresholds/names/PM interval) always requires a fresh `POST /upload/approve-criteria`; changing AHP weights alone never does | Only threshold/scoring changes can invalidate prior scoring assumptions; weights are applied on top of already-approved scores |
+| PM interval always resolves as `bundle.get("approved_pm_interval_days", criteria_config.get("recommended_pm_interval_days", 90))` | Never a bare hardcoded 90 except as the innermost last-resort fallback; SME approval takes precedence over Claude's suggestion |
+| `recommended_pm_interval_days` outside 7-730 days (or missing) is forced to 90 with `pm_interval_source` forced to `"default"` | A stale/invalid source label on an overridden value would misrepresent where the number came from |
+| `calculate_mtbf()` returns `mtbf_days=None` (not a fabricated estimate) when zero failures are observed; the UI shows `N/A*` with a footnote | Honest "insufficient data" beats a confident-looking number with no basis; matches the `insufficient_data` `replace_vs_maintain` decision |
+| `calculate_mtbm()` returns `recommendation="maintain"` at the current interval (not `None`/`"insufficient_data"`) when `mtbf_days` is `None` | "Keep the current schedule" is a safer default than either an unfounded estimate or no recommendation at all |
+| Health Status badge, risk-ranking sort order, and the urgency banner (Critical/At Risk) all derive from the single `getHealthStatus(rul_days, risk_factor)` function in `DynamicAssetTable.jsx`, sourced from the shared `COLORS` constant | Prevents the banner and the per-row status from ever disagreeing about which assets are urgent |
 | `primary_column` and sensor assignments are read-only in the criteria review screen | Changing them would invalidate the already-trained XGBoost model |
 | Editing thresholds/names/default scores in the review screen never retriggers Claude | The model stays trained; only the SME-editable fields change |
 | `threshold_breach_detector.py` is pure deterministic math, no API call | Breach detection must run on every scoring cycle without Anthropic cost or latency |
@@ -1261,10 +1319,11 @@ API_BASE_URL=http://localhost:8000
 - clamp() and convert_to_saaty() live in ahp/criteria_scoring.py
 - No em dashes in UI
 - RUL displayed in **days** in the UI (Math.round(rul_years * 365)), backend always returns years
-- RUL color thresholds: green > 365 days, yellow 180-365 days, red < 180 days
+- RUL color thresholds: green > 365 days, yellow 180-365 days, red < 180 days (the RUL pill's own coloring in `DynamicAssetTable.jsx`; distinct from the Health Status badge's finer-grained thresholds -- Critical <90 days, At Risk <180, Monitor <365 -- which also fold in `risk_factor` once RUL alone reads healthy)
 - Progress bar max = 7300 days (20 years * 365)
 - Test RMSE displayed in **days** in UploadPanel's training summary (Math.round(test_rmse * 365)), same day-conversion convention as RUL; backend (`dynamic_train.py`) always returns years
 - Composite Stress Index is clamped to [0, 1] at the display layer (`Math.min(1, Math.max(0, value))`) before both the progress bar width and the text label -- the raw computed value can exceed 1
+- Est. MTBF displays `N/A*` (not a number) with the footnote "Minimum 2 observed failures required for MTBF estimation" whenever `mtbf_days` is `None`
 
 ---
 
