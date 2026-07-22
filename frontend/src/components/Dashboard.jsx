@@ -29,6 +29,7 @@ export default function Dashboard() {
     uploadStatus, criteriaConfig, trainingResult,
     uploadedAssets, predictedAssets, modelPath, errorMessage, isPredicting,
     criteriaApproved, approvedCriteriaConfig, approvalChanges, hasResults,
+    mode, modelInfo,
     approveCriteria, editCriteria,
     uploadAndAnalyze, predictAll, resetUpload, explainAsset, explainBreach,
   } = useUpload()
@@ -89,6 +90,8 @@ export default function Dashboard() {
         hasResults={hasResults}
         criteriaApproved={criteriaApproved}
         approvalChanges={approvalChanges}
+        mode={mode}
+        modelInfo={modelInfo}
         onApproveCriteria={approveCriteria}
         onEditCriteria={editCriteria}
         onAnalyze={uploadAndAnalyze}

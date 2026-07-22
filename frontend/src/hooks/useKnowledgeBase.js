@@ -8,6 +8,22 @@ export default function useKnowledgeBase() {
   const [errorMessage, setErrorMessage] = useState(null)
   const [auditLog, setAuditLog] = useState([])
   const [auditLogStatus, setAuditLogStatus] = useState('idle')
+  const [trainedModels, setTrainedModels] = useState([])
+  const [trainedModelsStatus, setTrainedModelsStatus] = useState('idle')
+
+  const fetchTrainedModels = useCallback(async () => {
+    setTrainedModelsStatus('loading')
+    try {
+      const res = await fetch(`${API_BASE}/upload/models`)
+      if (!res.ok) throw new Error(`Server error ${res.status}`)
+      const data = await res.json()
+      setTrainedModels(data.models ?? [])
+      setTrainedModelsStatus('done')
+    } catch (err) {
+      console.error('Failed to fetch trained models:', err)
+      setTrainedModelsStatus('error')
+    }
+  }, [])
 
   const fetchAuditLog = useCallback(async () => {
     setAuditLogStatus('loading')
@@ -82,5 +98,8 @@ export default function useKnowledgeBase() {
     auditLog,
     auditLogStatus,
     fetchAuditLog,
+    trainedModels,
+    trainedModelsStatus,
+    fetchTrainedModels,
   }
 }

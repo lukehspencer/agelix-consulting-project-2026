@@ -164,7 +164,7 @@ class TestValidateUpload:
         with pytest.raises(UploadValidationError, match="Missing required sheet"):
             validate_upload(str(path))
 
-    def test_no_rul_column(self, tmp_path):
+    def _build_no_rul_file(self, tmp_path):
         path = tmp_path / "no_rul.xlsx"
         tel = pd.DataFrame({
             "Pump_ID": ["P1"] * 15,
@@ -180,9 +180,22 @@ class TestValidateUpload:
         with pd.ExcelWriter(str(path), engine="openpyxl") as w:
             tel.to_excel(w, sheet_name="Operational Telemetry", index=False)
             log.to_excel(w, sheet_name="Failure & Maintenance Logs", index=False)
+        return path
 
+    def test_no_rul_column_optional_by_default(self, tmp_path):
+        # Prediction-mode uploads (current telemetry, no failure yet) never
+        # carry a RUL column -- validate_upload must accept them by default.
+        path = self._build_no_rul_file(tmp_path)
+        s = validate_upload(str(path))
+        assert s["rul_column"] is None
+        assert s["has_rul_column"] is False
+
+    def test_no_rul_column_required_raises(self, tmp_path):
+        # Training uploads (rul/dynamic_train_cli.py) opt into the strict
+        # behavior via require_rul_column=True.
+        path = self._build_no_rul_file(tmp_path)
         with pytest.raises(UploadValidationError, match="RUL target column") as exc_info:
-            validate_upload(str(path))
+            validate_upload(str(path), require_rul_column=True)
         assert "Pump_ID" in str(exc_info.value) or "Sensor_A" in str(exc_info.value)
 
 

@@ -18,6 +18,7 @@ from rul.dynamic_ml_rul_model import predict_adjusted_dynamic
 from rul.rul_explainer import explain
 from rul.breach_explainer import explain_all_breaches
 from rul.mtbf_mtbm import calculate_mtbf, calculate_mtbm, calculate_replace_vs_maintain
+from rul import model_registry
 from data.column_resolver import get_sensor_columns
 from rag.retriever import retrieve_for_schema_inference, retrieve_for_explanation
 from rag.knowledge_base import store_criteria_config
@@ -233,15 +234,6 @@ async def analyze_upload(file: UploadFile):
         pass
 
     try:
-        training_result = train_dynamic_model(
-            str(file_path), schema_summary, criteria_config,
-        )
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    _generate_failure_case(criteria_config, training_result)
-
-    try:
         snapshots = aggregate_uploaded_data(
             str(file_path), schema_summary, criteria_config,
         )
@@ -271,17 +263,64 @@ async def analyze_upload(file: UploadFile):
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
+    # Training mode: this upload carries a RUL target column, so it is
+    # historical run-to-failure data -- train a fresh model on it and save it
+    # to the registry for future prediction-mode uploads of this asset type.
+    if schema_summary.get("has_rul_column"):
+        try:
+            model_output_path = model_registry.model_path_for_asset_type(
+                criteria_config.get("asset_type", "unknown"),
+            )
+            training_result = train_dynamic_model(
+                str(file_path), schema_summary, criteria_config,
+                model_output_path=model_output_path,
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        _generate_failure_case(criteria_config, training_result)
+
+        return {
+            "mode": "training",
+            "criteria_config": criteria_config,
+            "schema_summary": schema_summary,
+            "training_result": {
+                "train_rmse": training_result["train_rmse"],
+                "test_rmse": training_result["test_rmse"],
+                "n_train_samples": training_result["n_train_samples"],
+                "n_test_samples": training_result["n_test_samples"],
+            },
+            "assets": assets,
+            "model_path": training_result["model_path"],
+        }
+
+    # Prediction mode: no RUL target column, so this is current telemetry to
+    # be scored against an already-trained model, never used to train one.
+    model_path = model_registry.find_model(criteria_config.get("asset_type", "unknown"))
+    if model_path is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No pre-trained model found for asset type "
+                f"'{criteria_config.get('asset_type', 'unknown')}'. "
+                "Train a model first using:\n"
+                "python -m rul.dynamic_train_cli --file <historical_data.xlsx>"
+            ),
+        )
+
+    bundle = model_registry.get_model_bundle(model_path)
+    model_asset_type = bundle.get("criteria_config", {}).get("asset_type", "unknown")
+
     return {
+        "mode": "prediction",
         "criteria_config": criteria_config,
         "schema_summary": schema_summary,
-        "training_result": {
-            "train_rmse": training_result["train_rmse"],
-            "test_rmse": training_result["test_rmse"],
-            "n_train_samples": training_result["n_train_samples"],
-            "n_test_samples": training_result["n_test_samples"],
-        },
+        "training_result": None,
         "assets": assets,
-        "model_path": training_result["model_path"],
+        "model_path": model_path,
+        "model_used": model_path,
+        "model_asset_type": model_asset_type,
+        "feature_count": len(bundle.get("feature_names", [])),
     }
 
 
@@ -533,3 +572,8 @@ def approve_criteria(body: ApproveCriteriaInput):
 def get_upload_audit_log():
     entries = get_audit_log()
     return {"entries": entries, "total_entries": len(entries)}
+
+
+@router.get("/models")
+def list_trained_models():
+    return {"models": model_registry.list_models()}

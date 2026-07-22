@@ -149,6 +149,55 @@ function PenaltyEditor({ penalties, disabled, onBandChange }) {
   )
 }
 
+function ModeBanner({ mode, trainingResult, modelInfo }) {
+  if (mode === 'training') {
+    return (
+      <div
+        className="mode-banner mode-banner-training"
+        style={{
+          background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px',
+          padding: '0.75rem 1rem', marginBottom: '0.75rem', fontSize: '0.85rem', color: '#166534',
+        }}
+      >
+        <p style={{ margin: 0, fontWeight: 700 }}>Training mode detected — True_RUL_Days found</p>
+        {trainingResult && (
+          <p style={{ margin: '0.3rem 0 0' }}>
+            Model trained on {trainingResult.n_train_samples} samples — Test RMSE:{' '}
+            {Math.round(trainingResult.test_rmse * 365)} days
+          </p>
+        )}
+        <p style={{ margin: '0.3rem 0 0' }}>Model saved for future predictions on this asset type.</p>
+        <p style={{ margin: '0.3rem 0 0', fontStyle: 'italic' }}>
+          Note: to predict on new data, upload a file without True_RUL_Days.
+        </p>
+      </div>
+    )
+  }
+
+  if (mode === 'prediction') {
+    return (
+      <div
+        className="mode-banner mode-banner-prediction"
+        style={{
+          background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px',
+          padding: '0.75rem 1rem', marginBottom: '0.75rem', fontSize: '0.85rem', color: '#1e40af',
+        }}
+      >
+        <p style={{ margin: 0, fontWeight: 700 }}>Prediction mode — using pre-trained model</p>
+        <p style={{ margin: '0.3rem 0 0' }}>
+          Model: {modelInfo?.model_asset_type ?? 'Unknown'} — trained on{' '}
+          {modelInfo?.feature_count ?? '?'} features
+        </p>
+        <p style={{ margin: '0.3rem 0 0', fontStyle: 'italic' }}>
+          Note: predictions are based on patterns learned from historical run-to-failure data.
+        </p>
+      </div>
+    )
+  }
+
+  return null
+}
+
 function CriteriaReviewCard({
   criterion, disabled,
   onNameChange, onUiLabelChange, onDefaultScoreChange,
@@ -226,6 +275,8 @@ export default function UploadPanel({
   hasResults,
   criteriaApproved,
   approvalChanges,
+  mode,
+  modelInfo,
   onApproveCriteria,
   onEditCriteria,
   onAnalyze,
@@ -457,11 +508,7 @@ export default function UploadPanel({
                   {editedCriteriaConfig.asset_type}. Review and adjust before approving.</>}
           </h3>
 
-          {trainingResult && (
-            <div className="training-strip">
-              Model trained on {trainingResult.n_train_samples} samples — Test RMSE: {Math.round(trainingResult.test_rmse * 365)} days
-            </div>
-          )}
+          <ModeBanner mode={mode} trainingResult={trainingResult} modelInfo={modelInfo} />
 
           <div className="criteria-card criteria-review-card pm-interval-section" style={{ marginBottom: '0.75rem' }}>
             <div className="criteria-card-header">

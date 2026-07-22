@@ -29,6 +29,8 @@ export default function useUpload() {
   const [approvedCriteriaConfig, setApprovedCriteriaConfig] = useState(null)
   const [approvalChanges, setApprovalChanges] = useState(0)
   const [hasResults, setHasResults] = useState(false)
+  const [mode, setMode] = useState(null)
+  const [modelInfo, setModelInfo] = useState(null)
 
   const uploadAndAnalyze = useCallback(async (file) => {
     setUploadStatus('uploading')
@@ -59,6 +61,12 @@ export default function useUpload() {
       setTrainingResult(data.training_result)
       setUploadedAssets(data.assets)
       setModelPath(data.model_path)
+      setMode(data.mode ?? null)
+      setModelInfo(data.mode === 'prediction' ? {
+        model_used: data.model_used,
+        model_asset_type: data.model_asset_type,
+        feature_count: data.feature_count,
+      } : null)
       setPredictedAssets([])
       setCriteriaApproved(false)
       setApprovedCriteriaConfig(null)
@@ -305,6 +313,8 @@ export default function useUpload() {
     setApprovedCriteriaConfig(null)
     setApprovalChanges(0)
     setHasResults(false)
+    setMode(null)
+    setModelInfo(null)
   }, [])
 
   return {
@@ -321,6 +331,8 @@ export default function useUpload() {
     approvedCriteriaConfig,
     approvalChanges,
     hasResults,
+    mode,
+    modelInfo,
     approveCriteria,
     editCriteria,
     uploadAndAnalyze,

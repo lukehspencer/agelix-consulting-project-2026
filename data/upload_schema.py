@@ -72,7 +72,7 @@ def _detect_event_column(columns):
     return None
 
 
-def validate_upload(file_path: str) -> dict:
+def validate_upload(file_path: str, require_rul_column: bool = False) -> dict:
     try:
         xls = pd.ExcelFile(file_path, engine="openpyxl")
     except Exception as exc:
@@ -139,7 +139,7 @@ def validate_upload(file_path: str) -> dict:
 
     # --- RUL target column ---
     rul_col = _detect_role_column(tel_cols, _RUL_KEYWORDS, df_tel)
-    if rul_col is None:
+    if rul_col is None and require_rul_column:
         raise UploadValidationError(
             f"Cannot detect RUL target column. "
             f"Looked for numeric columns containing: {_RUL_KEYWORDS}. "
@@ -156,8 +156,9 @@ def validate_upload(file_path: str) -> dict:
         )
 
     # --- Sensor columns ---
-    role_cols = {asset_id_col.lower(), date_col.lower(),
-                 rul_col.lower(), hours_col.lower()}
+    role_cols = {asset_id_col.lower(), date_col.lower(), hours_col.lower()}
+    if rul_col:
+        role_cols.add(rul_col.lower())
     sensor_columns = [
         c for c in tel_cols
         if c.lower() not in role_cols and pd.api.types.is_numeric_dtype(df_tel[c])
@@ -238,6 +239,7 @@ def validate_upload(file_path: str) -> dict:
         "asset_id_column": asset_id_col,
         "date_column": date_col,
         "rul_column": rul_col,
+        "has_rul_column": bool(rul_col),
         "operating_hours_column": hours_col,
         "sensor_columns": sensor_columns,
         "log_asset_id_column": log_asset_id_col,

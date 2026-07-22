@@ -96,6 +96,48 @@ function AuditLogSection({ auditLog, auditLogStatus, fetchAuditLog }) {
   )
 }
 
+function TrainedModelsSection({ trainedModels, trainedModelsStatus }) {
+  const isLoading = trainedModelsStatus === 'loading'
+  const isError = trainedModelsStatus === 'error'
+
+  return (
+    <div className="kb-section">
+      <h3 className="kb-section-title">
+        Trained Models <span className="kb-badge">Auto-generated</span>
+      </h3>
+      {isLoading && <p className="kb-empty">Loading trained models...</p>}
+      {isError && <p className="kb-status-err">Failed to load trained models.</p>}
+      {!isLoading && !isError && trainedModels.length === 0 && (
+        <p className="kb-empty">
+          No trained models yet. Train one with: python -m rul.dynamic_train_cli --file &lt;historical_data.xlsx&gt;
+        </p>
+      )}
+      {!isLoading && !isError && trainedModels.length > 0 && (
+        <div className="registry-scroll">
+          <table className="audit-log-table">
+            <thead>
+              <tr>
+                <th>Asset Type</th>
+                <th>Trained At</th>
+                <th>Feature Count</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trainedModels.map(m => (
+                <tr key={m.filename}>
+                  <td>{m.asset_type}</td>
+                  <td>{m.trained_at}</td>
+                  <td>{m.feature_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function KnowledgeBasePanel() {
   const [expanded, setExpanded] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
@@ -111,11 +153,17 @@ export default function KnowledgeBasePanel() {
     auditLog,
     auditLogStatus,
     fetchAuditLog,
+    trainedModels,
+    trainedModelsStatus,
+    fetchTrainedModels,
   } = useKnowledgeBase()
 
   useEffect(() => {
-    if (expanded) fetchDocuments()
-  }, [expanded, fetchDocuments])
+    if (expanded) {
+      fetchDocuments()
+      fetchTrainedModels()
+    }
+  }, [expanded, fetchDocuments, fetchTrainedModels])
 
   function handleFileSelect(file) {
     if (file && file.name.toLowerCase().endsWith('.pdf')) {
@@ -225,6 +273,12 @@ export default function KnowledgeBasePanel() {
               </ul>
             )}
           </div>
+
+          {/* Trained Models */}
+          <TrainedModelsSection
+            trainedModels={trainedModels}
+            trainedModelsStatus={trainedModelsStatus}
+          />
 
           {/* Approval Audit Log */}
           <AuditLogSection

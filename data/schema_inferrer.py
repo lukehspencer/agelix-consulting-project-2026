@@ -69,6 +69,14 @@ def _build_prompt(s: dict, retrieved_context: dict = None,
 
     extra_samples = json.dumps(s.get("log_extra_column_samples", {}), indent=2)
     maintenance_dates_display = maintenance_event_dates or []
+    has_rul = s.get("has_rul_column", s.get("rul_column") is not None)
+    rul_line = f'- RUL target column name: {s["rul_column"]}\n' if has_rul else ""
+    rul_rule = (
+        ""
+        if has_rul
+        else "7. No RUL (remaining useful life) column exists in this dataset. "
+             "Set column_roles.rul_target to null.\n"
+    )
 
     rag_block = ""
     if retrieved_context and retrieved_context.get("retrieval_available"):
@@ -97,8 +105,7 @@ DATASET OVERVIEW:
 - Total rows: {s["row_count"]}
 - Asset ID column name: {s["asset_id_column"]}
 - Date column name: {s["date_column"]}
-- RUL target column name: {s["rul_column"]}
-- Operating hours column name: {s["operating_hours_column"]}
+{rul_line}- Operating hours column name: {s["operating_hours_column"]}
 
 SENSOR COLUMNS AND STATISTICS:
 {sensor_block}
@@ -130,6 +137,7 @@ Rules:
 5. In failure_event_values, list the exact string values from the
    unique event type values that indicate a failure event (not maintenance).
 6. Infer the asset type from column names and data statistics.
+{rul_rule}
 
 Respond with ONLY a valid JSON object. No preamble, no markdown fences,
 no trailing text. The JSON must conform exactly to this structure:
@@ -141,7 +149,7 @@ no trailing text. The JSON must conform exactly to this structure:
   "column_roles": {{
     "asset_id": "<exact column name from dataset>",
     "date": "<exact column name from dataset>",
-    "rul_target": "<exact column name from dataset>",
+    "rul_target": "<exact column name from dataset, or null if no RUL column exists>",
     "operating_hours": "<exact column name from dataset>",
     "log_asset_id": "<exact column name from log sheet>",
     "log_date": "<exact column name from log sheet>",
@@ -193,6 +201,8 @@ no trailing text. The JSON must conform exactly to this structure:
 
 
 def _validate_config(config: dict, schema_summary: dict) -> None:
+    has_rul = schema_summary.get("has_rul_column", schema_summary.get("rul_column") is not None)
+
     required_roles = [
         "asset_id", "date", "rul_target", "operating_hours",
         "log_asset_id", "log_date", "log_event_type", "log_component",
@@ -205,21 +215,27 @@ def _validate_config(config: dict, schema_summary: dict) -> None:
                 f"Got keys: {list(cr.keys())}"
             )
 
-    all_tel_cols = (
-        [schema_summary["asset_id_column"], schema_summary["date_column"],
-         schema_summary["rul_column"], schema_summary["operating_hours_column"]]
-        + schema_summary["sensor_columns"]
-    )
+    all_tel_cols = [
+        c for c in (
+            schema_summary["asset_id_column"], schema_summary["date_column"],
+            schema_summary["rul_column"], schema_summary["operating_hours_column"],
+        ) if c
+    ] + schema_summary["sensor_columns"]
     all_tel_lower = {c.lower(): c for c in all_tel_cols}
 
     tel_roles = ["asset_id", "date", "rul_target", "operating_hours"]
     for role in tel_roles:
+        if role == "rul_target" and not has_rul:
+            continue
         val = cr[role]
         if val and val.lower() not in all_tel_lower:
             raise RuntimeError(
                 f"Schema inferrer: Claude returned unknown column '{val}' "
                 f"for role '{role}'. Valid columns: {all_tel_cols}"
             )
+
+    if not has_rul:
+        cr["rul_target"] = None
 
     all_log_columns = (
         [schema_summary["log_asset_id_column"]] +
