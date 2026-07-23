@@ -1,6 +1,6 @@
 [build]
 builder = "nixpacks"
-buildCommand = "pip install -r requirements.txt && python data/generate_maintenance_log.py && python -m rul.train && echo '=== FRONTEND DIST ===' && ls -la frontend/ && ls -la frontend/dist/ || echo 'NO DIST FOUND'"
+buildCommand = "pip install -r requirements.txt && python data/generate_maintenance_log.py && python -m rul.train && python -c \"import pandas as pd, os; os.makedirs('data/raw/uploads', exist_ok=True); tel = pd.read_excel('data/raw/telemetry/KSB_Calio_Predictive_Maintenance_Complete.xlsx'); log = pd.read_excel('data/raw/maintenance/maintenance_log.xlsx'); w = pd.ExcelWriter('data/raw/uploads/KSB_Full_Upload.xlsx'); tel.to_excel(w, sheet_name='Operational Telemetry', index=False); log.to_excel(w, sheet_name='Failure & Maintenance Logs', index=False); w.close(); print('Upload file created')\" && python -m rul.dynamic_train_cli --file data/raw/uploads/KSB_Full_Upload.xlsx"
 
 [deploy]
 startCommand = "sh -c 'uvicorn main:app --host 0.0.0.0 --port $PORT'"
