@@ -27,6 +27,8 @@ def main():
         description="Train a dynamic RUL model on historical run-to-failure data."
     )
     parser.add_argument("--file", required=True, help="Path to the Excel training file")
+    parser.add_argument("--config", default=None,
+        help="Path to pre-built CriteriaConfig JSON. Skips Claude inference.")
     args = parser.parse_args()
 
     file_path = args.file
@@ -43,14 +45,20 @@ def main():
             "telemetry sheet. None was found."
         )
 
-    print("Inferring AHP criteria config via Claude...")
-    retrieved_context = retrieve_for_schema_inference(schema_summary)
-    try:
-        criteria_config = infer_criteria_config(
-            schema_summary, retrieved_context, file_path=file_path,
-        )
-    except RuntimeError as exc:
-        raise SystemExit(f"Criteria inference failed: {exc}")
+    if args.config:
+        import json
+        with open(args.config) as f:
+            criteria_config = json.load(f)
+        print(f"Using pre-built config from {args.config}")
+    else:
+        print("Inferring AHP criteria config via Claude...")
+        retrieved_context = retrieve_for_schema_inference(schema_summary)
+        try:
+            criteria_config = infer_criteria_config(
+                schema_summary, retrieved_context, file_path=file_path,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(f"Criteria inference failed: {exc}")
 
     try:
         store_criteria_config(criteria_config, criteria_config.get("asset_type", "unknown"))
