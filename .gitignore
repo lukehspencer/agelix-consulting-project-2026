@@ -40,10 +40,11 @@ Thumbs.db
 Desktop.ini
 
 # ── ML Models ─────────────────────────────────────────────────────────────────
-# rul/dynamic_model.pkl
+rul/dynamic_model.pkl
+rul/models/
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
 rag/chroma_db/
 
 # ── Uploads ───────────────────────────────────────────────────────────────────
-data/raw/uploads/rul/models/
+data/raw/uploads/
