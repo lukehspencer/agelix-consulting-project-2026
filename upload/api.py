@@ -163,6 +163,7 @@ class PredictAllInput(BaseModel):
     manual_scores: dict
     model_path: str = "rul/dynamic_model.pkl"
     approved_criteria_config: dict | None = None
+    prediction_schema_summary: dict | None = None
 
     @field_validator("weights")
     @classmethod
@@ -315,6 +316,10 @@ async def analyze_upload(file: UploadFile):
         "mode": "prediction",
         "criteria_config": criteria_config,
         "schema_summary": schema_summary,
+        # Column names detected from THIS prediction file -- must be sent back
+        # on /upload/predict-all so it reads the prediction file's actual
+        # columns instead of the pre-trained bundle's training-file schema.
+        "prediction_schema_summary": schema_summary,
         "training_result": None,
         "assets": assets,
         "model_path": model_path,
@@ -338,7 +343,20 @@ def predict_all(body: PredictAllInput):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Model not found at '{body.model_path}'.")
 
-    schema_summary = bundle["schema_summary"]
+    # Column name lookups must always reflect the file actually being scored,
+    # not the bundle's historical training file -- a later prediction-mode
+    # upload of the same asset type can use different column names (e.g.
+    # "Event_Date" vs. the training file's "Event_Timestamp"), and
+    # aggregate_uploaded_data() indexes the dataframe directly by these names.
+    # The client sends the schema it detected from its own prediction file
+    # (returned by /upload/analyze as prediction_schema_summary); fall back to
+    # the bundle's schema_summary when it's absent (e.g. weight-only re-runs
+    # against the training file itself, or older callers).
+    schema_summary = (
+        body.prediction_schema_summary
+        if body.prediction_schema_summary is not None
+        else bundle["schema_summary"]
+    )
 
     # A criteria config passed directly (the client's currently-approved config)
     # lets weight-only re-runs skip a full re-approval cycle. Falling back to the

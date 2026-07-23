@@ -31,6 +31,12 @@ export default function useUpload() {
   const [hasResults, setHasResults] = useState(false)
   const [mode, setMode] = useState(null)
   const [modelInfo, setModelInfo] = useState(null)
+  // Column names detected from the currently uploaded prediction file --
+  // sent back on predict-all so it reads THIS file's columns instead of the
+  // pre-trained model bundle's training-file schema. Only set in prediction
+  // mode; null in training mode (predict-all then falls back to the bundle's
+  // own schema_summary, which is correct since that IS the training file).
+  const [predictionSchemaSummary, setPredictionSchemaSummary] = useState(null)
 
   const uploadAndAnalyze = useCallback(async (file) => {
     setUploadStatus('uploading')
@@ -67,6 +73,7 @@ export default function useUpload() {
         model_asset_type: data.model_asset_type,
         feature_count: data.feature_count,
       } : null)
+      setPredictionSchemaSummary(data.prediction_schema_summary ?? null)
       setPredictedAssets([])
       setCriteriaApproved(false)
       setApprovedCriteriaConfig(null)
@@ -169,6 +176,7 @@ export default function useUpload() {
         manual_scores: manualScores,
         model_path: modelPath,
         approved_criteria_config: approvedCriteriaConfig,
+        prediction_schema_summary: predictionSchemaSummary,
       }
       console.log('[useUpload] predictAll: POST /upload/predict-all body =', JSON.stringify(body))
 
@@ -201,7 +209,7 @@ export default function useUpload() {
     } finally {
       setIsPredicting(false)
     }
-  }, [modelPath, uploadedFileName, approvedCriteriaConfig])
+  }, [modelPath, uploadedFileName, approvedCriteriaConfig, predictionSchemaSummary])
 
   const explainAsset = useCallback(async (assetPayload) => {
     const activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig
@@ -315,6 +323,7 @@ export default function useUpload() {
     setHasResults(false)
     setMode(null)
     setModelInfo(null)
+    setPredictionSchemaSummary(null)
   }, [])
 
   return {
@@ -333,6 +342,7 @@ export default function useUpload() {
     hasResults,
     mode,
     modelInfo,
+    predictionSchemaSummary,
     approveCriteria,
     editCriteria,
     uploadAndAnalyze,

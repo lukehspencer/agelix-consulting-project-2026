@@ -12,6 +12,8 @@ The backend supports two modes. A default fleet mode loads a pre-configured flee
 
 In uploaded asset mode, the user uploads an Excel file with operational telemetry and a failure/maintenance log, Claude analyzes the data and infers appropriate AHP criteria, scoring thresholds, and a recommended preventive-maintenance interval for that asset type, and the dashboard runs the full risk and RUL pipeline on the uploaded data. Claude's inferred criteria are always a draft: a human reviews and approves (or edits) them in the dashboard before they can drive any scoring or prediction, and every approval is recorded in an audit trail showing exactly what changed from Claude's suggestion. Approval isn't a one-time checkpoint -- once criteria have been approved at least once, the user can freely re-run the risk/RUL analysis with different AHP weights with no extra approval step, and can reopen the review screen at any time to edit thresholds or the PM interval, which requires re-approving before the next run.
 
+An upload only ever does one of two things, never both: **training** (the file has a labeled RUL/remaining-life column -- historical run-to-failure data) fits a fresh XGBoost model and saves it for future reuse; **prediction** (no such column -- current telemetry with an unknown outcome) scores assets against a model trained earlier. A file is never used to both train a model and immediately "predict" on the very rows it was trained on -- that would just be re-reading the answer key, not a genuine prediction. See Training vs. Prediction Mode below.
+
 The RUL model for uploaded assets also looks beyond single-sensor thresholds: it tracks trend direction and cross-sensor correlation over a rolling window, and separately runs deterministic threshold-breach detection on every scoring pass, with Claude only invoked on demand to explain a breach that has already been found. It also produces simplified MTBF (mean time between failures) and MTBM (recommended maintenance interval) estimates, plus a basic replace-vs-maintain economic comparison -- all deterministic approximations, not full statistical reliability models.
 
 Built as an internship project for Agelix Consulting to extend their asset lifecycle management platform, Assets Maestro. The default asset class is the KSB Calio 30-40 glandless circulator pump.
@@ -149,15 +151,30 @@ At inference time, the raw model prediction is adjusted by the AHP risk factor: 
 
 When a user uploads an Excel file (two sheets: Operational Telemetry and Failure & Maintenance Logs), the pipeline:
 
-1. Validates the file and detects column roles by keyword heuristics -- no specific column names are required.
+1. Validates the file and detects column roles by keyword heuristics -- no specific column names are required. A RUL/remaining-life column is *optional* at this stage; whether one was found determines training vs. prediction mode in step 4.
 2. Queries the RAG knowledge base for relevant engineering standards, similar past CriteriaConfigs, and known failure cases.
-3. Calls the Anthropic API to infer 3-7 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges and a recommended PM (preventive maintenance) interval inferred from the gaps between logged maintenance events (or from domain knowledge if fewer than 2 exist), enriched by retrieved domain knowledge. This is a **draft** -- it is stored provisionally but not yet trusted.
-4. Trains a fresh XGBoost model on the uploaded dataset (the model bundle is saved as unapproved).
+3. Calls the Anthropic API to infer 3-7 AHP criteria appropriate for the detected asset type, with scoring thresholds calibrated to the actual data ranges and a recommended PM (preventive maintenance) interval inferred from the gaps between logged maintenance events (or from domain knowledge if fewer than 2 exist), enriched by retrieved domain knowledge. This is a **draft** -- it is stored provisionally but not yet trusted. If no RUL column was found, `column_roles.rul_target` is forced to `null`.
+4. Branches on whether a RUL column was found (see Training vs. Prediction Mode below): **training mode** trains a fresh XGBoost model on the uploaded dataset and saves it to the model registry (unapproved); **prediction mode** looks up an already-trained model for this asset type and skips training entirely.
 5. **The user reviews and approves the criteria** in the dashboard: criterion names, manual-input default scores, threshold/penalty values, and the recommended PM interval are all editable (sensor column assignments are not, since changing them would invalidate the trained model). Approving locks the bundle and re-stores the SME-approved CriteriaConfig in the knowledge base as a new, versioned file for future retrieval -- Claude's original draft is never overwritten, and every approval (with a before/after diff of exactly what the SME changed) is appended to an audit log. Approval isn't one-and-done: the user can come back and click "Edit Criteria" at any time to change thresholds or the PM interval and re-approve, or just re-run the analysis with new AHP weights without touching criteria at all.
-6. Auto-generates a failure case document recording the asset type, sensors, failure modes, criteria, and training metrics.
+6. Auto-generates a failure case document recording the asset type, sensors, failure modes, criteria, and training metrics (training mode only).
 7. Scores each asset, runs deterministic threshold-breach detection, computes MTBF/MTBM/replace-vs-maintain estimates using the approved PM interval, and predicts RUL using the user's AHP matrix. The first prediction run requires the criteria to have been approved; subsequent weight-only re-runs don't require re-approving.
 
 All column name references flow through a central resolver module (`data/column_resolver.py`) -- no part of the pipeline hardcodes column names.
+
+### Training vs. Prediction Mode
+
+Whether an upload trains a model or scores against one is decided automatically, purely by whether the file has a RUL (remaining useful life) target column:
+
+- **Training mode** -- the file is historical run-to-failure data with a known outcome per row. A fresh XGBoost model is trained and saved to `rul/models/<asset_type>.pkl`. The dashboard shows a green banner: "Training mode detected -- True_RUL_Days found," with the training sample count and test RMSE, and a note that predicting on new data requires a file *without* that column.
+- **Prediction mode** -- the file is current telemetry with no known outcome yet. No training happens. The system looks up the best-matching pre-trained model for the inferred asset type (exact name match first, then word-overlap match) and scores assets against it. The dashboard shows a blue banner: "Prediction mode -- using pre-trained model," naming the matched asset type and its feature count. If no matching model exists yet, the upload is rejected with the exact command needed to fix it.
+
+To train a model for a brand-new asset type without going through the dashboard (e.g. to seed the model registry before end users ever upload prediction data), use the standalone CLI:
+
+```bash
+python -m rul.dynamic_train_cli --file <path_to_historical_run_to_failure_data.xlsx>
+```
+
+This is the only way to train a dynamic model from scratch outside of a training-mode dashboard upload -- it is never invoked automatically by the API or frontend. The file must include a RUL target column; the resulting model is saved to `rul/models/<asset_type>.pkl` just like a training-mode upload, and still needs its criteria approved once in the dashboard (during a subsequent prediction-mode upload) before predictions can run against it.
 
 ### Approval Audit Trail
 
@@ -241,12 +258,13 @@ GET `/ahp/assets` accepts query params: `weights` (repeated float), `c1_score` (
 
 | Method | Route | Description |
 |---|---|---|
-| POST | `/upload/analyze` | Upload Excel -> infer draft criteria, train model (unapproved), score assets |
+| POST | `/upload/analyze` | Upload Excel -> infer draft criteria, then branch on whether the file has a RUL column: **training mode** trains a model (unapproved) and saves it to the model registry; **prediction mode** looks up an existing model for the asset type (422 if none exists) and never trains. Both modes score assets |
 | POST | `/upload/approve-criteria` | SME approves (optionally edited) criteria + PM interval -> locks the model bundle; can be called again after "Edit Criteria" to re-approve |
-| POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets (400 if criteria have never been approved; weight-only re-runs after that don't need re-approval) |
+| POST | `/upload/predict-all` | AHP weights + manual scores -> RUL for all uploaded assets (400 if criteria have never been approved; weight-only re-runs after that don't need re-approval). Column-name lookups use the schema of the file actually being scored, not the model's original training file |
 | POST | `/upload/explain` | Asset + AHP + RUL + asset type -> Claude explanation (includes multi-sensor correlation summary) |
 | POST | `/upload/explain-breach` | Asset + detected breaches -> on-demand Claude alerts for medium/high severity breaches |
 | GET | `/upload/audit-log` | Full approval audit trail -- every draft-vs-approved diff across all uploads |
+| GET | `/upload/models` | List all pre-trained dynamic models available in the registry (asset type, filename, trained-at timestamp, feature count) |
 
 ### `/rag` -- RAG Knowledge Base Management
 
@@ -276,7 +294,7 @@ The upload endpoint accepts a two-sheet Excel file (`.xlsx`). Column names are f
 |---|---|---|
 | Asset identifier | column name contains `_id` or `id` | Yes |
 | Timestamp | column name contains `date`, `time`, or `timestamp` | Yes |
-| RUL target | column name contains `rul`, `remaining`, `life`, or `ttf` | Yes |
+| RUL target | column name contains `rul`, `remaining`, `life`, or `ttf` | No -- optional. Present -> **training mode** (fits and saves a new model). Absent -> **prediction mode** (scores against an already-trained model for that asset type; see Training vs. Prediction Mode) |
 | Operating hours | column name contains `hour`, `runtime`, `operating`, `cycles`, or `cumulative` | Yes |
 | Sensor readings | all other numeric columns | Min. 2 |
 
@@ -338,6 +356,9 @@ agelix-consulting-project-2026/
 |   +-- breach_explainer.py        # On-demand Anthropic API breach alerts
 |   +-- mtbf_mtbm.py               # Deterministic MTBF/MTBM/replace-vs-maintain estimates
 |   +-- dynamic_*.py               # Dynamic equivalents for uploaded assets
+|   +-- dynamic_train_cli.py       # Standalone CLI: python -m rul.dynamic_train_cli --file <path>
+|   +-- model_registry.py          # list_models() / find_model() / get_model_bundle()
+|   +-- models/                    # One <asset_type>.pkl per trained dynamic asset type
 |   +-- api.py                     # /rul/* endpoints
 +-- data/
 |   +-- telemetry_aggregator.py    # Default fleet data source

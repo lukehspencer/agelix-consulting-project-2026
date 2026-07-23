@@ -24,20 +24,42 @@ Default Fleet Mode (backend only -- not rendered in the dashboard UI):
 
 Upload Mode:
   User Excel file (.xlsx)
-  -> upload_schema.py (validation + schema_summary)
+  -> upload_schema.py (validation + schema_summary; RUL target column is optional --
+     require_rul_column=False by default, has_rul_column flag records whether one was found)
   -> retriever.py (RAG: standards, similar configs, failure cases)
   -> schema_inferrer.py (Anthropic API + retrieved_context + maintenance_event_dates
      -> CriteriaConfig draft, including recommended_pm_interval_days/pm_interval_source/
-     pm_interval_confidence)
+     pm_interval_confidence; column_roles.rul_target forced to null when has_rul_column is False)
   -> knowledge_base.py (store draft CriteriaConfig for future retrieval)
-  -> dynamic_train.py (trains XGBoost model on the draft config, bundle["approved"] = False)
-  -> SME Review & Approve gate (React: UploadPanel.jsx review screen, incl. PM interval editor)
+
+  -> POST /upload/analyze branches on schema_summary["has_rul_column"]:
+
+     TRAINING MODE (file has a RUL target column -- historical run-to-failure data):
+       -> dynamic_train.py (trains XGBoost model on the draft config, bundle["approved"] = False)
+       -> saved to rul/models/<asset_type>.pkl via model_registry.py (never rul/dynamic_model.pkl
+          directly -- that path only survives as an explicit backward-compatible default)
+       -> auto-generate failure case markdown (docs/failure_cases/)
+       -> response: {"mode": "training", training_result, model_path, ...}
+
+     PREDICTION MODE (no RUL target column -- current telemetry to be scored):
+       -> model_registry.find_model(asset_type) (exact match, else word-overlap match against
+          every bundle in rul/models/; HTTP 422 pointing at rul/dynamic_train_cli.py if none found)
+       -> NO training ever happens on this path
+       -> response: {"mode": "prediction", model_used, model_asset_type, feature_count,
+          prediction_schema_summary, ...}
+
+  -> SME Review & Approve gate (React: UploadPanel.jsx review screen, incl. PM interval editor
+     and a mode banner -- green "Training mode detected" or blue "Prediction mode -- using
+     pre-trained model")
      -> POST /upload/approve-criteria (validates edits, locks bundle["criteria_config"],
         sets bundle["approved"] = True, stores bundle["approved_pm_interval_days"] if given,
         re-stores the approved config via knowledge_base.py as a new versioned file,
         logs the draft-vs-approved diff via rag/audit_log.py)
   -> column_resolver.py (all column lookups, always against the approved config)
-  -> dynamic_aggregator.py (asset snapshots + rolling + multi-sensor trend/correlation features)
+  -> dynamic_aggregator.py (asset snapshots + rolling + multi-sensor trend/correlation features;
+     POST /upload/predict-all always passes it the schema of the file actually being scored --
+     body.prediction_schema_summary when the client sent one, else the bundle's own
+     schema_summary -- never the training bundle's schema blindly reused against a different file)
   -> dynamic_criteria_scorer.py (AHP scores from the approved CriteriaConfig)
   -> threshold_breach_detector.py (deterministic threshold/penalty breach detection, no API call)
   -> mtbf_mtbm.py (deterministic MTBF / MTBM / replace-vs-maintain estimates, no API call;
@@ -45,13 +67,19 @@ Upload Mode:
   -> dynamic_feature_engineering.py (feature vector: rolling + correlation + breach features)
   -> dynamic_ml_rul_model.py (RUL -- POST /upload/predict-all requires criteria to have been
      approved at least once; weight-only re-runs reuse the approved config without re-approving)
-  -> auto-generate failure case markdown (docs/failure_cases/)
   -> retriever.py (RAG: failure precedents, maintenance guidance)
   -> rul_explainer.py (Claude explanation with retrieved_context + correlation_summary)
   -> breach_explainer.py (on-demand Claude alert for high/medium severity breaches only)
   -> FastAPI (upload/api.py)
   -> React dashboard (Dashboard.jsx's only rendered view; Edit Criteria reopens the review
      screen for threshold/PM-interval changes without discarding existing results)
+
+Offline Training (rul/dynamic_train_cli.py -- the only way to train a model from scratch):
+  python -m rul.dynamic_train_cli --file <historical_data.xlsx>
+  -> upload_schema.py (require_rul_column=True -- hard error if no RUL column found)
+  -> schema_inferrer.py -> dynamic_train.py -> rul/models/<asset_type>.pkl via model_registry.py
+  -> never invoked from the API or frontend; the user-facing upload flow only ever predicts
+     against models this script (or a training-mode /upload/analyze call) already produced
 
 RAG Knowledge Pipeline:
   docs/manuals/ (PDF manuals)
@@ -110,7 +138,16 @@ agelix-consulting-project-2026/
 |   +-- dynamic_feature_engineering.py     # variable-length feature vector (uploaded assets)
 |   +-- dynamic_ml_rul_model.py            # predict for dynamically trained models
 |   +-- dynamic_train.py                   # trains XGBoost on any uploaded dataset, bundle["approved"]=False
-|   +-- dynamic_model.pkl                  # trained uploaded model (generated per upload)
+|   +-- dynamic_model.pkl                  # legacy single-model path -- fallback default only, no
+|   |                                      # longer where training-mode /upload/analyze saves to
+|   +-- dynamic_train_cli.py               # standalone CLI: python -m rul.dynamic_train_cli --file <path>
+|   |                                      # the only way to train a model from scratch; never
+|   |                                      # called from the API or frontend
+|   +-- model_registry.py                  # list_models() / find_model() / get_model_bundle() /
+|   |                                      # model_path_for_asset_type() over rul/models/
+|   +-- models/                            # one <sanitized_asset_type>.pkl per trained asset type
+|   |                                      # (written by dynamic_train_cli.py and by training-mode
+|   |                                      # /upload/analyze)
 |
 +-- data/
 |   +-- raw/
@@ -130,8 +167,9 @@ agelix-consulting-project-2026/
 |
 +-- upload/
 |   +-- __init__.py
-|   +-- api.py                             # /upload/analyze, /upload/approve-criteria, /upload/predict-all,
-|   |                                      # /upload/explain, /upload/explain-breach
+|   +-- api.py                             # /upload/analyze (training or prediction mode),
+|   |                                      # /upload/approve-criteria, /upload/predict-all,
+|   |                                      # /upload/explain, /upload/explain-breach, /upload/models
 |
 +-- rag/
 |   +-- __init__.py
@@ -605,15 +643,53 @@ maintenance_cost_last_year = sum of repair costs for failures in last 365 days:
 
 Validates uploaded Excel files against the two-sheet contract. Detects column roles by heuristic keyword matching. Returns a `schema_summary` dict containing detected column names, sensor column list, per-sensor statistics (min, max, mean, std, p25, p75), asset IDs, row count, date range, log event type values, and log extra column samples. Raises `UploadValidationError` with descriptive messages on any failure.
 
+`validate_upload(file_path: str, require_rul_column: bool = False) -> dict` -- the RUL target column is **optional by default**. When no RUL-like column is detected, `schema_summary["rul_column"] = None` and `schema_summary["has_rul_column"] = False` instead of raising; this is what makes prediction-mode uploads (current telemetry with no known outcome yet) possible. Passing `require_rul_column=True` restores the old hard-fail behavior -- used exclusively by `rul/dynamic_train_cli.py`, since training genuinely needs a labeled target. `has_rul_column` is what `POST /upload/analyze` branches on (see Training vs. Prediction Mode below).
+
 ### schema_inferrer.py
 
 Makes one Anthropic API call (claude-sonnet-4-6, max_tokens=2500) with the full schema_summary. Accepts an optional `retrieved_context: dict` parameter and an optional `file_path: str` parameter (used only to compute `maintenance_event_dates`, see below). When `retrieved_context` is provided and `retrieval_available` is True, a RETRIEVED DOMAIN KNOWLEDGE block is injected into the prompt between the sensor statistics and TASK sections, containing `standards_chunks`, `similar_configs`, and `failure_case_chunks` from the RAG pipeline. Claude returns a CriteriaConfig JSON dict -- the single source of truth for all downstream files. After parsing, validates every column name Claude returns against schema_summary to prevent hallucinated names from breaking the pipeline. Raises `RuntimeError` on API failure or invalid response. All existing behavior is unchanged when `retrieved_context`/`file_path` are None.
+
+**Optional RUL column:** when `schema_summary["has_rul_column"]` is `False`, the prompt omits the "RUL target column name" line entirely and adds an explicit rule instructing Claude to set `column_roles.rul_target` to `null`. `_validate_config()` skips the `rul_target` existence check against `schema_summary["sensor_columns"]`/telemetry columns in that case (a `None`-valued list would otherwise `.lower()`-crash the check) and unconditionally forces `column_roles["rul_target"] = None` after validation, regardless of what Claude actually returned -- criteria inference must never depend on Claude correctly omitting a column that doesn't exist.
 
 **failure_event_values fallback:** If Claude returns an empty `failure_event_values` list, the inferrer automatically populates it by scanning `schema_summary["log_event_type_values"]` for entries containing "fail", "fault", "error", or "breakdown" (case-insensitive). If no keyword matches, the first value in the list is used as fallback. Only raises an error if `log_event_type_values` itself is empty.
 
 **PM interval inference:** Before building the prompt, `_compute_maintenance_event_dates(file_path, schema_summary)` loads the log sheet directly (schema_summary alone doesn't carry row-level data) and returns sorted ISO date strings for every row whose event type value is NOT in the set of `log_event_type_values` containing "fail"/"fault"/"error" (case-insensitive) -- i.e. the maintenance (non-failure) events. Returns `[]` on any missing column or read failure; this is best-effort prompt context, never a reason to block inference. The dates are injected into the FAILURE & MAINTENANCE LOG section of the prompt with an instruction to infer a recommended PM interval from the intervals between them (or from domain knowledge about the asset type if fewer than 2 exist). See Upload Pipeline > PM Interval Inference and Approval for the full field set and downstream flow.
 
 **Markdown fence stripping:** Claude's response is stripped of any leading ` ```json ` / ` ``` ` fences before JSON parsing.
+
+### Training vs. Prediction Mode
+
+`POST /upload/analyze` branches on `schema_summary["has_rul_column"]` immediately after schema inference. This is the core distinction between the two dynamic-asset flows: **training** teaches a model what failure looks like from historical run-to-failure data; **prediction** scores current telemetry against a model that has already learned that. A single upload endpoint can no longer both train on and predict from the same uploaded file -- that was self-validating (the model saw the exact rows it was later "predicting" on) rather than genuinely predictive.
+
+**Training mode** (`has_rul_column` is `True` -- the upload has a labeled RUL target, i.e. historical data): trains a fresh XGBoost model exactly as before (`dynamic_train.py`), but saves it to `rul/models/<sanitized_asset_type>.pkl` via `model_registry.model_path_for_asset_type()` instead of the shared `rul/dynamic_model.pkl` path. Auto-generates the failure case markdown as before. Response includes `"mode": "training"` and the usual `training_result`.
+
+**Prediction mode** (`has_rul_column` is `False` -- current telemetry, no known outcome yet): never calls `dynamic_train.py`. Instead calls `model_registry.find_model(asset_type)` to locate an already-trained model for this asset type. If none exists, returns HTTP 422 with the exact command to fix it: `"No pre-trained model found for asset type '{asset_type}'. Train a model first using:\npython -m rul.dynamic_train_cli --file <historical_data.xlsx>"`. If found, the criteria config is still freshly inferred from *this* file's own schema (so the SME reviews thresholds calibrated to the current data) and assets are aggregated and scored (but not RUL-predicted yet -- that's still `POST /upload/predict-all`). Response includes `"mode": "prediction"`, `"model_used"` (the resolved model path), `"model_asset_type"`, `"feature_count"`, and `"prediction_schema_summary"` (this upload's own `schema_summary`, returned under an explicit name -- see `POST /upload/predict-all` below for why).
+
+Training is never triggered from the user-facing upload flow when `has_rul_column` is `False` -- `rul/dynamic_train_cli.py` (see below) is the only way to train a new model from scratch.
+
+### rul/model_registry.py
+
+Manages the collection of pre-trained models in `rul/models/`.
+
+```python
+list_models() -> list[dict]     # [{"asset_type", "filename", "model_path", "trained_at", "feature_count"}]
+find_model(asset_type: str) -> str | None
+get_model_bundle(model_path: str) -> dict     # raises FileNotFoundError with a CLI hint if missing
+sanitize_asset_type(asset_type: str) -> str   # asset_type.lower().replace(" ", "_").replace("/", "_")
+model_path_for_asset_type(asset_type: str) -> str   # rul/models/<sanitize_asset_type(asset_type)>.pkl
+```
+
+`find_model()` matching strategy, in order: (1) exact case-insensitive match on `asset_type`; (2) partial match -- the model bundle with the most word-overlap against the query `asset_type` (tokenized on `[a-z0-9]+`), as long as at least one word overlaps; (3) `None` if nothing overlaps at all. `list_models()` returns `[]` if `rul/models/` doesn't exist yet, and silently skips any `.pkl` that fails to `joblib.load()` (e.g. corrupted or mid-write) rather than raising.
+
+### rul/dynamic_train_cli.py
+
+Standalone script -- the only way to train a dynamic RUL model from scratch. Never imported or called by the API or frontend.
+
+```
+python -m rul.dynamic_train_cli --file <path_to_excel>
+```
+
+Runs `validate_upload(file_path, require_rul_column=True)` (hard error if no RUL column), infers a CriteriaConfig the same way `/upload/analyze` does (including storing it via `knowledge_base.store_criteria_config()`), then calls `dynamic_train.train_dynamic_model()` with `model_output_path=model_registry.model_path_for_asset_type(asset_type)`. Prints asset type, train/test sample counts, train/test RMSE (years), and the saved model path. The resulting bundle starts with `bundle["approved"] = False` exactly like a training-mode `/upload/analyze` bundle -- it still needs to go through `POST /upload/approve-criteria` (triggered from the dashboard's review screen during a later prediction-mode upload) before `POST /upload/predict-all` will accept it via the normal approval gate.
 
 ### column_resolver.py
 
@@ -698,6 +774,8 @@ POST /upload/approve-criteria
 Validates: 3-7 criteria; every criterion has `id`/`name`/`description`/`manual_input`; every non-manual criterion has `primary_column` (must still exist in the bundle's `schema_summary["sensor_columns"]`) and at least 2 thresholds; every threshold `score` is a number between 1 and 10. `previous_config`, when provided, is diffed against instead of `bundle["criteria_config"]` -- on a re-approval (see below) this lets the change count and audit log reflect what changed *this round*, not the drift from Claude's original draft. `approved_pm_interval_days`, when provided and within 7-730 days, is stored as `bundle["approved_pm_interval_days"]`; an invalid or missing value leaves the bundle's existing PM interval state untouched (never overwritten with garbage). On success, overwrites `bundle["criteria_config"]`, sets `bundle["approved"] = True`, re-dumps the bundle, and calls `knowledge_base.store_criteria_config()` with the **approved** config so RAG retrieval for future uploads is built on human-validated data, not Claude's raw draft. Returns `{"status": "approved", "criteria_config": {...}, "changes_from_original": int, "approved_pm_interval_days": int | null, "approved_at": "..."}`.
 
 **Iterating after the first approval:** approval is not a one-time gate. Once a bundle has been approved at least once, the dashboard lets the user freely re-run predictions with different AHP weights without re-approving anything (`POST /upload/predict-all` accepts an optional `approved_criteria_config` in the body -- when present it's used directly, re-validated the same way as the approve-criteria endpoint, and no bundle-approval check is applied). Only editing criteria (thresholds, names, defaults, PM interval) requires walking back through `POST /upload/approve-criteria` again -- clicking "Edit Criteria" in the dashboard just clears the client-side `criteriaApproved` flag and reopens the review screen pre-populated with the last-approved values; it does not touch the server. If `approved_criteria_config` is omitted from a `/upload/predict-all` call, the endpoint falls back to `bundle["criteria_config"]` and still hard-blocks with HTTP 400 (`"Criteria have not been approved. Complete the review step before running predictions."`) unless `bundle["approved"]` is `True` -- so the *first* approval is still always required before any prediction can run; it's only the *repeat* full-cycle re-approval that re-running weights alone no longer needs.
+
+**Column names come from the file being scored, not the training file:** `POST /upload/predict-all` uses two independent configs, resolved separately. Scoring thresholds, criteria definitions, and the feature vector shape always come from `criteria_config` (the bundle's, or the client's `approved_criteria_config` override -- unchanged by this distinction, since those are asset-type properties, not file properties). Column *name* lookups -- everything `dynamic_aggregator.aggregate_uploaded_data()` uses to index the actual dataframe (`asset_id_column`, `date_column`, `rul_column`, `operating_hours_column`, `sensor_columns`, `log_asset_id_column`, `log_date_column`) -- come from `body.prediction_schema_summary` when the client sends one, falling back to `bundle["schema_summary"]` only when it's absent (weight-only re-runs against the training file itself, or older callers). This matters because a prediction-mode upload of the same asset type is not guaranteed to use the exact same column names as whatever file the model was originally trained on (e.g. `"Event_Date"` vs. the training file's `"Event_Timestamp"`) -- `aggregate_uploaded_data()` indexes the dataframe directly by these names (`df_tel[date_col]`, not a graceful `column_resolver.resolve()` lookup), so passing it the wrong file's schema raises a raw `KeyError` instead of a readable validation error. `POST /upload/analyze` in prediction mode returns this file's own schema as `"prediction_schema_summary"` specifically so the client can round-trip it back into the next `predict-all` call. `_validate_approved_criteria()` (used both by `approve-criteria` and by `predict-all`'s `approved_criteria_config` path) is validated against this same resolved `schema_summary`, for the same reason -- a client-supplied criteria config inferred from the prediction file's own columns must be checked against that file's own sensor columns, not the training file's.
 
 ### Versioned CriteriaConfig Storage
 
@@ -966,7 +1044,7 @@ Train/test split: hold out asset with most rows. Same XGBoost params as default 
 
 Model bundle saved as dict: `{"model", "feature_names", "criteria_config", "schema_summary", "approved"}`, plus `"approved_pm_interval_days"` once an SME approves a PM interval (absent until then). Feature vector length validated against `bundle["feature_names"]` at inference time. `approved` starts `False` at training time and is flipped to `True` only by `POST /upload/approve-criteria` and never flipped back -- `POST /upload/predict-all` refuses to run against a bundle that has never been approved, but a since-approved bundle stays usable for weight-only re-runs even while the SME is mid-edit on a new round of criteria changes (see Upload Pipeline > SME Criteria Approval Gate).
 
-Model location: `rul/dynamic_model.pkl`.
+Model location: `rul/models/<sanitized_asset_type>.pkl` (via `model_registry.model_path_for_asset_type()`), written by a training-mode `POST /upload/analyze` or by `rul/dynamic_train_cli.py` -- see Upload Pipeline > Training vs. Prediction Mode. `rul/dynamic_model.pkl` remains as `train_dynamic_model()`'s literal default parameter value and as a fallback default elsewhere in the codebase, but is no longer where either of the above two callers actually saves to.
 
 ---
 
@@ -1034,12 +1112,36 @@ POST /rul/explain body:
 
 | Method | Route | Description |
 |---|---|---|
-| POST | `/upload/analyze` | Upload .xlsx -> validate, infer criteria (draft), train model (`approved=False`), score assets |
+| POST | `/upload/analyze` | Upload .xlsx -> validate, infer criteria (draft), then branch on `has_rul_column`: **training mode** trains a model (`approved=False`) and saves it to `rul/models/`; **prediction mode** looks up an existing model via `model_registry.find_model()` (422 if none exists) and never trains. Both modes score assets (no RUL yet) |
 | POST | `/upload/approve-criteria` | SME approves/edits the draft CriteriaConfig -> locks the bundle, `approved=True` |
 | POST | `/upload/predict-all` | Re-score + predict RUL with user weights; 400 if the bundle is not yet approved |
 | POST | `/upload/explain` | Claude explanation for uploaded asset with dynamic sensor context + correlation summary |
 | POST | `/upload/explain-breach` | On-demand Claude alerts for an asset's high/medium severity threshold breaches |
 | GET  | `/upload/audit-log` | Full approval audit trail (draft vs. approved diffs across all uploads) |
+| GET  | `/upload/models` | List all pre-trained models in `rul/models/` via `model_registry.list_models()` |
+
+POST /upload/analyze response (training mode):
+```json
+{"mode": "training", "criteria_config": {}, "schema_summary": {},
+ "training_result": {"train_rmse": 0.31, "test_rmse": 0.42, "n_train_samples": 210, "n_test_samples": 45},
+ "assets": [], "model_path": "rul/models/centrifugal_pump.pkl"}
+```
+
+POST /upload/analyze response (prediction mode):
+```json
+{"mode": "prediction", "criteria_config": {}, "schema_summary": {},
+ "prediction_schema_summary": {}, "training_result": null, "assets": [],
+ "model_path": "rul/models/centrifugal_pump.pkl", "model_used": "rul/models/centrifugal_pump.pkl",
+ "model_asset_type": "Centrifugal Pump", "feature_count": 47}
+```
+`prediction_schema_summary` is this upload's own `schema_summary`, returned under its own key so the frontend can carry it forward unambiguously into `POST /upload/predict-all` (see below). Returns HTTP 422 if `model_registry.find_model()` finds nothing for the inferred `asset_type`: `"No pre-trained model found for asset type '{asset_type}'. Train a model first using:\npython -m rul.dynamic_train_cli --file <historical_data.xlsx>"`.
+
+GET /upload/models response:
+```json
+{"models": [{"asset_type": "KSB Calio Centrifugal Pump", "filename": "ksb_calio_centrifugal_pump.pkl",
+  "model_path": "rul/models/ksb_calio_centrifugal_pump.pkl", "trained_at": "2026-07-21T14:23:11+00:00",
+  "feature_count": 47}]}
+```
 
 POST /upload/approve-criteria body:
 ```json
@@ -1066,9 +1168,9 @@ POST /upload/predict-all body:
 ```json
 {"file_path": "data/raw/uploads/file.xlsx", "weights": [0.35, 0.25, 0.2, 0.12, 0.08],
  "cr": 0.07, "manual_scores": {"C1": 7, "C4": 6}, "model_path": "rul/dynamic_model.pkl",
- "approved_criteria_config": {} | null}
+ "approved_criteria_config": {} | null, "prediction_schema_summary": {} | null}
 ```
-`weights` length must match the number of criteria in the stored CriteriaConfig (3-7). The endpoint uses `range(n_criteria)` internally -- never hardcodes 5. `approved_criteria_config` is optional: when provided (the frontend always sends its current `approvedCriteriaConfig` once one exists), it's used directly after re-validation, letting weight-only re-runs skip a full re-approval cycle; when omitted, `criteria_config` falls back to `bundle["criteria_config"]` and the endpoint returns HTTP 400 unless `bundle["approved"]` is `True`. Either way, the first approval is always required before any prediction can run -- see SME Criteria Approval Gate. Each returned asset also includes `correlation_summary` (`composite_stress_index`, `top_correlated_pairs`, `sensors_degrading_together`), `breaches` (list), `breach_summary` (counts + `alert_required`), and `mtbf`/`mtbm`/`replace_vs_maintain` (see Upload Pipeline > Maintenance Planning and PM Interval Inference and Approval).
+`weights` length must match the number of criteria in the stored CriteriaConfig (3-7). The endpoint uses `range(n_criteria)` internally -- never hardcodes 5. `approved_criteria_config` is optional: when provided (the frontend always sends its current `approvedCriteriaConfig` once one exists), it's used directly after re-validation, letting weight-only re-runs skip a full re-approval cycle; when omitted, `criteria_config` falls back to `bundle["criteria_config"]` and the endpoint returns HTTP 400 unless `bundle["approved"]` is `True`. Either way, the first approval is always required before any prediction can run -- see SME Criteria Approval Gate. `prediction_schema_summary` is optional and independent of `approved_criteria_config`: when present, it -- not `bundle["schema_summary"]` -- is what `aggregate_uploaded_data()` uses for every column-name lookup, since the file at `file_path` may not share the training file's column names (see Upload Pipeline > "Column names come from the file being scored, not the training file"); when omitted, falls back to `bundle["schema_summary"]`. Each returned asset also includes `correlation_summary` (`composite_stress_index`, `top_correlated_pairs`, `sensors_degrading_together`), `breaches` (list), `breach_summary` (counts + `alert_required`), and `mtbf`/`mtbm`/`replace_vs_maintain` (see Upload Pipeline > Maintenance Planning and PM Interval Inference and Approval).
 
 POST /upload/explain body:
 ```json
@@ -1139,6 +1241,14 @@ predictedAssets:         []     // includes correlation_summary, breaches, breac
 uploadedExplanations:    {}     // keyed by asset_id
 uploadedBreachAlerts:    {}     // keyed by asset_id, from /upload/explain-breach
 uploadedAhpResult:       null   // { weights, cr, valid } from AHPMatrix's onWeightsUpdate
+mode:                    null   // "training" | "prediction" | null, from /upload/analyze's
+                                 // "mode" field -- drives UploadPanel's mode banner
+modelInfo:               null   // { model_used, model_asset_type, feature_count }, prediction
+                                 // mode only; null in training mode and before any analyze
+predictionSchemaSummary: null   // this upload's own schema_summary, from /upload/analyze's
+                                 // "prediction_schema_summary" field (prediction mode only) --
+                                 // round-tripped into predict-all so column lookups use THIS
+                                 // file's columns, not the pre-trained bundle's training-file ones
 ```
 Dashboard computes `activeCriteriaConfig = approvedCriteriaConfig ?? criteriaConfig` and passes that (not the raw draft) to `AHPMatrix` and `DynamicAssetTable` -- everything downstream of approval sees the SME-approved version, including whenever `criteriaApproved` is momentarily `false` during an edit (this value is never reset to `null`, only replaced by a newer approval). `UploadPanel` alone also receives the raw `criteriaConfig` draft and `approvedCriteriaConfig`, since its own review screen needs both: the original for the "Reset to Claude's Suggestions" button, the latest approval to pre-populate a re-edit.
 
@@ -1146,7 +1256,11 @@ Dashboard computes `activeCriteriaConfig = approvedCriteriaConfig ?? criteriaCon
 
 When file uploaded and analyzed:
   criteriaConfig set (draft) -> uploadedAssets populated with scores (no RUL yet) ->
-  criteriaApproved reset to false, approvedCriteriaConfig reset to null, hasResults reset to false
+  criteriaApproved reset to false, approvedCriteriaConfig reset to null, hasResults reset to false ->
+  mode set from response ("training" | "prediction"), modelInfo set (prediction mode only),
+  predictionSchemaSummary set from response.prediction_schema_summary (null in training mode) ->
+  UploadPanel shows a mode banner (green "Training mode detected" / blue "Prediction mode --
+  using pre-trained model") above the criteria review screen
 
 When criteria are approved (first time or after an edit):
   POST /upload/approve-criteria (sending previous_config + approved_pm_interval_days) ->
@@ -1157,7 +1271,9 @@ When predict-all runs:
   blocked client-side unless approvedCriteriaConfig exists (not just criteriaApproved, since
   weight-only re-runs can fire while criteriaApproved is momentarily false -- though the UI only
   ever shows the button while criteriaApproved is true) -> sends the current AHP weights/cr plus
-  approved_criteria_config -> predictedAssets set with RUL values in years (converted to days at
+  approved_criteria_config plus predictionSchemaSummary (null in training mode, which is fine --
+  the backend falls back to the model bundle's own schema_summary, correct since that bundle
+  IS the file just analyzed) -> predictedAssets set with RUL values in years (converted to days at
   display layer), each asset carrying correlation_summary + breaches + breach_summary + mtbf +
   mtbm + replace_vs_maintain -> hasResults set to true
 
@@ -1190,8 +1306,8 @@ When breach alerts requested:
 | Component | File | Rendered by Dashboard.jsx? | Purpose |
 |---|---|---|---|
 | AHPMatrix | AHPMatrix.jsx | Yes | NxN pairwise matrix with CR validation, N = criteria count from CriteriaConfig (3-7) |
-| UploadPanel | UploadPanel.jsx | Yes | File drop zone + Review & Approve Criteria screen (editable names/thresholds/penalties/default scores + PM interval card styled like the criteria cards, Reset + Approve) + Run/Re-run Analysis + Edit Criteria buttons once approved |
-| KnowledgeBasePanel | KnowledgeBasePanel.jsx | Yes | Collapsible RAG document manager (manuals/failure cases/criteria configs) + Approval Audit Log viewer; uses `useKnowledgeBase` internally |
+| UploadPanel | UploadPanel.jsx | Yes | File drop zone + a `ModeBanner` (green "Training mode detected" when `mode === "training"`, blue "Prediction mode -- using pre-trained model" showing `model_asset_type`/`feature_count` when `mode === "prediction"`) + Review & Approve Criteria screen (editable names/thresholds/penalties/default scores + PM interval card styled like the criteria cards, Reset + Approve) + Run/Re-run Analysis + Edit Criteria buttons once approved |
+| KnowledgeBasePanel | KnowledgeBasePanel.jsx | Yes | Collapsible RAG document manager (manuals/failure cases/criteria configs) + Trained Models list (`GET /upload/models` -- asset type/trained-at/feature count, fetched lazily on panel expand) + Approval Audit Log viewer; uses `useKnowledgeBase` internally |
 | DynamicAssetTable | DynamicAssetTable.jsx | Yes | Risk ranking sorted by health urgency (not raw risk factor) + Health Status column/badge + summary counts banner + RUL/MTBF/PM Interval columns + breach status column + urgency banner, and Explain / Breach Alerts popups (Multi-Sensor Analysis + Maintenance Planning with PM interval source/confidence + breach metrics). All urgency coloring (Health Status badge, Risk Factor/RUL pills, breach badge, MTBM recommendation) is sourced from one `COLORS` constant (`critical`/`at_risk`/`monitor`/`healthy`/`neutral`) so every visual element agrees on what's urgent |
 | ManualScoreInputs | ManualScoreInputs.jsx | No (orphaned) | C1/C4 manual inputs component; uploaded mode edits `default_score` inline inside UploadPanel's review cards instead |
 | DataUpload | DataUpload.jsx | No (orphaned) | CSV/JSON upload for KSB pump data |
@@ -1210,8 +1326,8 @@ When breach alerts requested:
 | Hook | File | Used by Dashboard.jsx? | State Managed |
 |---|---|---|---|
 | useAHP | useAHP.js | Indirectly (via AHPMatrix) | AHP matrix calculation API calls |
-| useUpload | useUpload.js | Yes | Upload flow state: analyze, criteria approval (`criteriaApproved`, `approvedCriteriaConfig`, `approvalChanges`, `approveCriteria(config, pmIntervalDays)`), `editCriteria()` (clears `criteriaApproved` without touching results), `hasResults`, predict-all (gated on `approvedCriteriaConfig` existing, sends the current weights/cr + approved config every call), explain, explain-breach |
-| useKnowledgeBase | useKnowledgeBase.js | Yes (via KnowledgeBasePanel) | RAG document lists, upload/delete status, audit log fetch (`auditLog`, `auditLogStatus`, `fetchAuditLog()`) |
+| useUpload | useUpload.js | Yes | Upload flow state: analyze (also sets `mode`, `modelInfo`, `predictionSchemaSummary` from the analyze response), criteria approval (`criteriaApproved`, `approvedCriteriaConfig`, `approvalChanges`, `approveCriteria(config, pmIntervalDays)`), `editCriteria()` (clears `criteriaApproved` without touching results), `hasResults`, predict-all (gated on `approvedCriteriaConfig` existing, sends the current weights/cr + approved config + `predictionSchemaSummary` every call), explain, explain-breach |
+| useKnowledgeBase | useKnowledgeBase.js | Yes (via KnowledgeBasePanel) | RAG document lists, upload/delete status, audit log fetch (`auditLog`, `auditLogStatus`, `fetchAuditLog()`), trained models fetch (`trainedModels`, `trainedModelsStatus`, `fetchTrainedModels()` -> `GET /upload/models`) |
 | useRiskScores | useRiskScores.js | No (orphaned) | GET /ahp/assets with current weights (default fleet) |
 | useRUL | useRUL.js | No (orphaned) | Auto-predict + on-demand explain (default fleet) |
 
@@ -1306,6 +1422,10 @@ API_BASE_URL=http://localhost:8000
 | `mtbf_mtbm.py` is pure deterministic math, no API call | MTBF/MTBM/replace-vs-maintain must run on every scoring cycle without Anthropic cost or latency |
 | MTBF/MTBM are simplified heuristic approximations, not full Weibull models | Explicitly scoped as such; do not add statistical reliability modeling without being asked |
 | `Dashboard.jsx` renders only the uploaded asset mode; default-fleet components/hooks are kept on disk but not imported | Default fleet backend endpoints remain available for direct API use by the AI team |
+| Training is never triggered from the user-facing upload flow when `schema_summary["has_rul_column"]` is `False`; `rul/dynamic_train_cli.py` is the only way to train a new model from scratch | A single upload can no longer both train on and predict from the same file -- that was self-validating, not genuinely predictive |
+| `validate_upload()`'s RUL target column is optional by default (`require_rul_column=False`); only `rul/dynamic_train_cli.py` passes `require_rul_column=True` | Prediction-mode uploads (current telemetry, no known outcome yet) must not be rejected for lacking a label they were never going to have |
+| `POST /upload/predict-all` resolves column-name lookups from `body.prediction_schema_summary` when present, falling back to `bundle["schema_summary"]` only when absent -- scoring thresholds/criteria/feature names still always come from `criteria_config` (bundle's or `approved_criteria_config`) | A prediction-mode upload's column names are not guaranteed to match the training file's; `aggregate_uploaded_data()` indexes the dataframe directly by these names and raises a raw `KeyError`, not a graceful default, if given the wrong file's schema |
+| `model_registry.find_model()` matches asset types by exact (case-insensitive) match first, then by word overlap, never by `model_path` guessing or hardcoded file paths | Keeps prediction-mode lookups working across minor asset-type name drift between separate Claude inferences of "the same" asset type |
 
 ---
 
@@ -1349,7 +1469,13 @@ Run tests:
 python -m pytest tests/
 ```
 
-The dynamic model (`rul/dynamic_model.pkl`) is not run at startup. It is trained automatically when a file is uploaded via the dashboard's uploaded asset mode.
+Training a dynamic (uploaded-asset) RUL model for a new asset type -- required once per asset type before any prediction-mode upload of that type will succeed:
+```
+python -m rul.dynamic_train_cli --file <path_to_historical_run_to_failure_data.xlsx>
+```
+This is the only way to train a dynamic model from scratch; it is never triggered from the API or dashboard. The file must include a RUL target column. Saves to `rul/models/<sanitized_asset_type>.pkl`. A training-mode `POST /upload/analyze` call from the dashboard (uploading a file that *does* have a RUL column) accomplishes the same thing and saves to the same location.
+
+Neither `rul/dynamic_model.pkl` nor `rul/models/*.pkl` are run at startup -- dynamic models are only ever produced by the CLI above or a training-mode upload, and only ever loaded on demand by `POST /upload/predict-all` / `POST /upload/approve-criteria` via their `model_path`.
 
 The RAG knowledge base (`rag/chroma_db/`) is optional. If not built, the upload pipeline and explainer work identically to before -- RAG retrieval returns `retrieval_available=False` and no context is injected. To populate it, place PDF manuals in `docs/manuals/` and/or failure case markdown in `docs/failure_cases/`, then run `python -m rag.ingest`. Use `--rebuild` to force a full rebuild. CriteriaConfigs are stored automatically in `rag/stored_configs/` after each successful upload analysis.
 
