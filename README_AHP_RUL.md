@@ -172,9 +172,15 @@ To train a model for a brand-new asset type without going through the dashboard 
 
 ```bash
 python -m rul.dynamic_train_cli --file <path_to_historical_run_to_failure_data.xlsx>
+
+# Or, to skip the Claude API call and reuse a previously-saved CriteriaConfig
+# (e.g. in a build environment without network access or an API key):
+python -m rul.dynamic_train_cli --file <path_to_historical_run_to_failure_data.xlsx> --config <path_to_criteria_config.json>
 ```
 
 This is the only way to train a dynamic model from scratch outside of a training-mode dashboard upload -- it is never invoked automatically by the API or frontend. The file must include a RUL target column; the resulting model is saved to `rul/models/<asset_type>.pkl` just like a training-mode upload, and still needs its criteria approved once in the dashboard (during a subsequent prediction-mode upload) before predictions can run against it.
+
+`--config` loads the CriteriaConfig JSON directly instead of calling Claude, and is not re-validated against the file's detected schema. Only point it at a config whose `column_roles.rul_target` is a real column name -- a config saved from a *prediction-mode* run has `rul_target` set to `null` by design, and training will fail against one of those even if the training file itself has a valid RUL column.
 
 ### Approval Audit Trail
 
@@ -339,8 +345,9 @@ If validation fails, the error message lists all column names detected in your f
 agelix-consulting-project-2026/
 +-- main.py                        # FastAPI entry point (also serves frontend/dist/ in production)
 +-- requirements.txt
-+-- railway.toml                   # Railway build/start commands
++-- railway.toml                   # Railway build/start commands (Nixpacks, not Docker -- see Deployment)
 +-- nixpacks.toml                  # Railway build environment
++-- Dockerfile                     # Alternative build path, not currently what Railway builds from
 +-- ahp/                           # AHP engine (do not modify)
 |   +-- criteria_scoring.py        # Scoring rules, convert_to_saaty(), clamp()
 |   +-- ahp_engine.py              # Matrix math, CR calculation
@@ -422,10 +429,14 @@ FastAPI backend and React frontend.
 ### Steps
 1. Push code to GitHub — Railway auto-deploys on every push to main
 2. Set environment variables in Railway dashboard:
-   - ANTHROPIC_API_KEY — your Anthropic API key
+   - ANTHROPIC_API_KEY — your Anthropic API key. Required at **build** 
+     time on Railway, not just runtime -- see below.
    - VITE_API_BASE_URL — leave empty
-3. Deploy takes a few minutes (installs Python deps, generates 
-   telemetry data, trains the default RUL model)
+3. Deploy takes a few minutes: installs Python deps, generates 
+   telemetry + maintenance log data, trains the default fleet RUL 
+   model, assembles a combined upload file from that same data, and 
+   trains a dynamic RUL model on it (`rul/models/`) so the KSB Calio 
+   asset type has a pre-trained model ready immediately after deploy
 4. Subsequent deploys are similarly fast
 
 **The frontend is not built on Railway.** `frontend/dist/` is committed 
@@ -433,6 +444,20 @@ to the repo and served directly by FastAPI (see `main.py`). If you
 change anything under `frontend/src/`, run `npm run build` inside 
 `frontend/` locally and commit the resulting `frontend/dist/` changes 
 before pushing — otherwise Railway will keep serving the old build.
+
+### Dockerfile
+
+A `Dockerfile` also exists at the project root, running the same 
+pipeline as Railway's build command as a sequence of Docker layers. 
+Railway itself does not currently build from it — `railway.toml` pins 
+`builder = "nixpacks"` — it's available for building the image 
+directly elsewhere (`docker build .`). Unlike the Railway build, its 
+dynamic-model-training step passes `--config rul/ksb_criteria_config.json` 
+to `rul/dynamic_train_cli.py`, which skips the Claude API call for that 
+step entirely (see Training vs. Prediction Mode) — so `docker build` 
+does not need `ANTHROPIC_API_KEY` to complete. The running container 
+still needs the key at runtime for normal schema inference and 
+explanation requests, passed via `docker run -e ANTHROPIC_API_KEY=...`.
 
 ### Redeploying after changes
 git push origin main

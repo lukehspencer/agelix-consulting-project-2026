@@ -113,6 +113,8 @@ agelix-consulting-project-2026/
 +-- .dockerignore
 +-- railway.toml                           # Railway build/start commands (see Deployment)
 +-- nixpacks.toml                          # Railway build environment (python311, nodejs_20, libomp)
++-- Dockerfile                             # Alternative build path, not what Railway currently
+|                                          # builds from (see Deployment > Dockerfile)
 +-- requirements.txt
 |
 +-- ahp/
@@ -687,9 +689,14 @@ Standalone script -- the only way to train a dynamic RUL model from scratch. Nev
 
 ```
 python -m rul.dynamic_train_cli --file <path_to_excel>
+python -m rul.dynamic_train_cli --file <path_to_excel> --config <path_to_criteria_config.json>
 ```
 
-Runs `validate_upload(file_path, require_rul_column=True)` (hard error if no RUL column), infers a CriteriaConfig the same way `/upload/analyze` does (including storing it via `knowledge_base.store_criteria_config()`), then calls `dynamic_train.train_dynamic_model()` with `model_output_path=model_registry.model_path_for_asset_type(asset_type)`. Prints asset type, train/test sample counts, train/test RMSE (years), and the saved model path. The resulting bundle starts with `bundle["approved"] = False` exactly like a training-mode `/upload/analyze` bundle -- it still needs to go through `POST /upload/approve-criteria` (triggered from the dashboard's review screen during a later prediction-mode upload) before `POST /upload/predict-all` will accept it via the normal approval gate.
+Runs `validate_upload(file_path, require_rul_column=True)` (hard error if no RUL column), then resolves the CriteriaConfig one of two ways depending on `--config`:
+- **`--config` omitted (default):** infers a CriteriaConfig the same way `/upload/analyze` does -- one Anthropic API call via `infer_criteria_config(schema_summary, retrieved_context, file_path=file_path)`, RAG-enriched, storing the result via `knowledge_base.store_criteria_config()`.
+- **`--config <path>` given:** skips Claude inference entirely and loads the CriteriaConfig straight from that JSON file (`json.load()`), printing `"Using pre-built config from {path}"`. No Anthropic API call happens for this step -- useful for build/CI environments (see Deployment > Dockerfile) that shouldn't depend on network access or an API key just to reproduce a previously-approved config. The loaded config is **not** re-validated against `schema_summary` the way `/upload/analyze`'s Claude output is -- in particular, a config saved from a *prediction-mode* run has `column_roles.rul_target = None` (forced there by design), and `dynamic_train.train_dynamic_model()` reads the RUL column from `criteria_config["column_roles"]["rul_target"]`, not from the freshly-detected `schema_summary["rul_column"]` -- so pointing `--config` at a prediction-mode-derived JSON will fail training with `RUL target column 'None' not found in dataset`, even though the training file itself has a real RUL column. Only point `--config` at a config whose `rul_target` is a real, populated column name.
+
+Either way, calls `dynamic_train.train_dynamic_model()` with `model_output_path=model_registry.model_path_for_asset_type(asset_type)`. Prints asset type, train/test sample counts, train/test RMSE (years), and the saved model path. The resulting bundle starts with `bundle["approved"] = False` exactly like a training-mode `/upload/analyze` bundle -- it still needs to go through `POST /upload/approve-criteria` (triggered from the dashboard's review screen during a later prediction-mode upload) before `POST /upload/predict-all` will accept it via the normal approval gate.
 
 ### column_resolver.py
 
@@ -1484,26 +1491,65 @@ The RAG knowledge base (`rag/chroma_db/`) is optional. If not built, the upload 
 ## Deployment
 
 The app is deployed on Railway as a single service. FastAPI serves 
-both the API and the built React frontend.
+both the API and the built React frontend. Railway builds via Nixpacks 
+(builder = "nixpacks" in railway.toml), **not** the Dockerfile -- see 
+"Dockerfile" below for when that path is used instead.
 
 Build and start command are configured in railway.toml:
-- Build: installs Python deps, builds React frontend, generates 
-  telemetry data, trains RUL model
+- Build: installs Python deps, generates telemetry + maintenance log 
+  data, trains the default fleet RUL model (rul/model.pkl), assembles 
+  a combined KSB_Full_Upload.xlsx from that same telemetry + 
+  maintenance log data (two-sheet format matching the upload 
+  contract), then trains a dynamic RUL model on it via 
+  `python -m rul.dynamic_train_cli --file data/raw/uploads/KSB_Full_Upload.xlsx` 
+  -- this seeds rul/models/ with a KSB Calio model so a prediction-mode 
+  upload of that asset type has something to match against immediately 
+  after deploy, without waiting on a first training-mode upload.
 - Start: uvicorn main:app --host 0.0.0.0 --port $PORT
 
+**Frontend is not built on Railway.** frontend/dist/ is committed to 
+the repo and served directly by FastAPI (see main.py). If you change 
+anything under frontend/src/, run `npm run build` inside frontend/ 
+locally and commit the resulting frontend/dist/ changes before 
+pushing -- otherwise Railway keeps serving the old build.
+
 Required environment variables on Railway:
-  ANTHROPIC_API_KEY — Anthropic API key
+  ANTHROPIC_API_KEY — Anthropic API key. Needed at **build** time, not 
+    just at runtime: the railway.toml buildCommand's dynamic_train_cli 
+    call does not pass --config, so it calls infer_criteria_config() 
+    (an Anthropic API call) during the build itself, before the app 
+    ever starts.
   VITE_API_BASE_URL — leave empty in production
 
 To redeploy after making changes:
   git push origin main
 Railway auto-detects the push and redeploys automatically.
 
-Frontend is built to frontend/dist/ and served from FastAPI via 
-StaticFiles mount in main.py. In production all API requests use 
-relative paths (no VITE_API_BASE_URL needed).
+In production all API requests use relative paths (no VITE_API_BASE_URL 
+needed).
 
-The dynamic model (rul/dynamic_model.pkl) and RAG knowledge base 
-(rag/chroma_db/) are regenerated on each deploy via the build 
-command. To persist them across deploys, add a Railway volume 
-mounted at /app/rul and /app/rag.
+The default fleet model (rul/model.pkl), the dynamic model registry 
+(rul/models/), and the RAG knowledge base (rag/chroma_db/) are all 
+regenerated on each deploy via the build command. To persist them 
+across deploys, add a Railway volume mounted at /app/rul and /app/rag.
+
+### Dockerfile
+
+A Dockerfile also exists at the project root, mirroring the same 
+pipeline as railway.toml's buildCommand (install deps, generate 
+telemetry/maintenance data, train the default fleet model, assemble 
+KSB_Full_Upload.xlsx, train a dynamic model) as a sequence of RUN 
+layers instead of one chained shell command. It is not what Railway 
+currently builds from (railway.toml pins `builder = "nixpacks"`); it's 
+available for building/running the image directly with `docker build` 
+elsewhere, or if the project is later switched to Railway's Docker 
+builder.
+
+One difference from railway.toml: the Dockerfile's dynamic_train_cli 
+call passes `--config rul/ksb_criteria_config.json`, which skips 
+Claude inference entirely for that step (see rul/dynamic_train_cli.py 
+below) -- so, unlike the Railway build, `docker build` does not need 
+ANTHROPIC_API_KEY to complete this step. It does still need the key at 
+container **runtime** for the app's normal schema inference and 
+explanation endpoints, passed via `docker run -e ANTHROPIC_API_KEY=...` 
+or the equivalent in whatever orchestrator runs the image.
