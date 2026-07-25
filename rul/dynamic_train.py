@@ -207,6 +207,11 @@ def train_dynamic_model(file_path: str,
         "criteria_config": criteria_config,
         "schema_summary": schema_summary,
         "approved": False,
+        # Max RUL (years) actually observed in this asset type's own training
+        # labels -- used by dynamic_ml_rul_model.py to cap extrapolation
+        # beyond what the model was ever trained to predict, without assuming
+        # any asset-type-specific engineering lifetime constant.
+        "max_train_rul_years": float(y.max()),
     }
 
     out_path = Path(model_output_path)

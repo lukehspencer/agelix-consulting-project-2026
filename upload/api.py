@@ -438,6 +438,8 @@ def predict_all(body: PredictAllInput):
             "weighted_scores": [round(ws, 6) for ws in weighted_scores],
             "rul_years": prediction["rul_years"],
             "rul_months": rul_months,
+            "rul_raw_days": round(prediction["rul_raw"] * 365),
+            "rul_calibrated": prediction["calibrated"],
             "ci_low": prediction["ci_low"],
             "ci_high": prediction["ci_high"],
             "ci_low_months": round(prediction["ci_low"] * 12, 1),

@@ -320,9 +320,17 @@ export default function DynamicAssetTable({
                   </td>
                   <td className="td-score">
                     {rulDays != null ? (
-                      <span className="rul-pill" style={{ backgroundColor: rulDaysColor(rulDays) }}>
-                        {rulDays}
-                      </span>
+                      <>
+                        <span className="rul-pill" style={{ backgroundColor: rulDaysColor(rulDays) }}>
+                          {rulDays}
+                        </span>
+                        {asset.rul_calibrated && (
+                          <span title="Prediction anchored to this asset type's observed training range"
+                                style={{fontSize: "10px", color: "#6b7280", marginLeft: "4px"}}>
+                              ⚓
+                          </span>
+                        )}
+                      </>
                     ) : '-'}
                   </td>
                   <td className="td-score">
@@ -386,6 +394,12 @@ export default function DynamicAssetTable({
 
             {/* Stats row */}
             <StatsRow asset={activeAsset} criteria={criteria} />
+
+            {activeAsset.rul_calibrated && (
+              <p className="mp-card-note" style={{ margin: '0.3rem 0 0.6rem', fontSize: '0.78rem', color: '#6b7280' }}>
+                Note: Raw model prediction was {activeAsset.rul_raw_days} days. Calibrated to {computeRulDays(activeAsset)} days based on this asset type's observed training range.
+              </p>
+            )}
 
             {/* Divider */}
             <div className="explain-popup-divider" />
