@@ -182,6 +182,14 @@ This is the only way to train a dynamic model from scratch outside of a training
 
 `--config` loads the CriteriaConfig JSON directly instead of calling Claude, and is not re-validated against the file's detected schema. Only point it at a config whose `column_roles.rul_target` is a real column name -- a config saved from a *prediction-mode* run has `rul_target` set to `null` by design, and training will fail against one of those even if the training file itself has a valid RUL column.
 
+### RUL Prediction Calibration (Dynamic Assets)
+
+Every dynamic RUL prediction is checked against how far it extrapolates beyond what that asset type's model actually saw during training, to guard against implausibly optimistic predictions. If a raw prediction exceeds the maximum RUL observed in that model's own training labels, it's pulled back toward that observed maximum -- a soft blend for predictions moderately beyond it, a stronger pull for predictions far beyond it; predictions within the observed range are left untouched.
+
+This anchor is deliberately **not** a fixed engineering lifetime constant (like the KSB Calio pump's documented 30,000-hour expected life) -- since the dynamic pipeline has to handle whatever asset type gets uploaded, a hardcoded pump-specific number would silently miscalibrate predictions for every other kind of asset. Instead, each trained model carries its own calibration anchor (the max RUL it was ever trained on), so calibration adapts automatically to whatever asset type that model was trained for. Older models trained before this feature existed simply skip calibration rather than erroring.
+
+When a prediction is calibrated, the dashboard shows a small ⚓ next to the RUL value and a note in the asset's explanation popup naming both the raw (uncalibrated) and calibrated day counts. The confidence interval shown alongside RUL is a fixed ±0.5 years (±182 days) band -- not a statistically derived interval, but a more useful approximation than the wider band used previously, given the RUL ranges typically seen in practice.
+
 ### Approval Audit Trail
 
 Every criteria approval is logged to `docs/audit_log.jsonl` (`rag/audit_log.py`) -- an append-only, one-line-per-approval record of the file uploaded, the asset type, the exact CriteriaConfig filename that was saved, a count of how many fields the SME changed, and a full field-by-field diff (criterion, field, Claude's original value, the approved value). This never blocks an approval -- if logging fails for any reason it's silently skipped. The dashboard's Knowledge Base panel has an "Approval Audit Log" section that lists every approval (timestamp, asset type, file, changes made) and lets you expand any row to see the full diff.
