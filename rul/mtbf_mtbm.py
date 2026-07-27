@@ -49,16 +49,39 @@ def calculate_mtbf(asset_snapshot: dict, criteria_config: dict) -> dict:
 def calculate_mtbm(mtbf_days: float, risk_factor: float,
                     current_interval_days: int = 90) -> dict:
     if mtbf_days is None:
-        next_maintenance_date = (date.today() + timedelta(days=current_interval_days)).isoformat()
+        # No failure history to derive an MTBF-based interval from. Fall back
+        # to a risk-adjusted interval instead of just "maintain current" --
+        # higher current risk (from the AHP criteria, not failure history)
+        # shortens the interval, up to a 50% reduction at max risk. This is
+        # a materially different, weaker basis than MTBF-derived recommendations
+        # below (asset condition/criticality, not observed failure frequency),
+        # so "basis" is always set here and callers/UI should treat it as such.
+        risk_ratio = (risk_factor - 1) / 8
+        adjustment = 1 - (risk_ratio * 0.5)
+        mtbm_recommended = round(current_interval_days * adjustment)
+
+        if mtbm_recommended < current_interval_days * 0.8:
+            recommendation = "shorten"
+            recommendation_text = (
+                f"Reduce interval to {mtbm_recommended} days based on current risk level. "
+                "Insufficient failure history for MTBF-based optimization."
+            )
+        else:
+            recommendation = "maintain"
+            recommendation_text = (
+                f"Current interval of {current_interval_days} days is appropriate given "
+                "current risk level."
+            )
+
+        next_maintenance_date = (date.today() + timedelta(days=mtbm_recommended)).isoformat()
+
         return {
-            "mtbm_recommended_days": current_interval_days,
+            "mtbm_recommended_days": mtbm_recommended,
             "current_interval_days": current_interval_days,
-            "recommendation": "maintain",
-            "recommendation_text": (
-                "Insufficient failure history for interval optimization -- "
-                "maintain current schedule"
-            ),
+            "recommendation": recommendation,
+            "recommendation_text": recommendation_text,
             "next_maintenance_date": next_maintenance_date,
+            "basis": "risk_adjusted",
         }
 
     base_mtbm = mtbf_days * 0.6
@@ -90,6 +113,7 @@ def calculate_mtbm(mtbf_days: float, risk_factor: float,
         "recommendation": recommendation,
         "recommendation_text": recommendation_text,
         "next_maintenance_date": next_maintenance_date,
+        "basis": "mtbf_based",
     }
 
 
