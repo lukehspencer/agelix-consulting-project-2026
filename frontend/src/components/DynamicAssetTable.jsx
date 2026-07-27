@@ -82,11 +82,44 @@ function severityBadgeClass(severity) {
   return 'breach-low'
 }
 
-function mtbmArrow(recommendation) {
-  if (recommendation === 'shorten') return { symbol: '↓', color: COLORS.critical }
-  if (recommendation === 'extend') return { symbol: '↑', color: COLORS.monitor }
-  if (recommendation === 'maintain') return { symbol: '—', color: COLORS.healthy }
-  return { symbol: '—', color: COLORS.neutral }
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// next_maintenance_date is always an ISO "YYYY-MM-DD" string from mtbf_mtbm.py.
+// Parsed as a local-midnight Date (not `new Date(isoString)`, which parses as
+// UTC and can shift the displayed calendar day in negative-UTC-offset zones).
+function _parseIsoDate(dateStr) {
+  if (!dateStr) return null
+  const [y, m, d] = dateStr.split('-').map(Number)
+  if (!y || !m || !d) return null
+  return new Date(y, m - 1, d)
+}
+
+function daysUntil(dateStr) {
+  const target = _parseIsoDate(dateStr)
+  if (!target) return null
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  target.setHours(0, 0, 0, 0)
+  return Math.round((target - today) / 86400000)
+}
+
+function formatShortDate(dateStr) {
+  const parsed = _parseIsoDate(dateStr)
+  if (!parsed) return null
+  return `${MONTH_ABBR[parsed.getMonth()]} ${String(parsed.getDate()).padStart(2, '0')}`
+}
+
+function pmIntervalColor(recommendation) {
+  if (recommendation === 'shorten') return COLORS.critical
+  if (recommendation === 'maintain' || recommendation === 'extend') return COLORS.healthy
+  return COLORS.neutral
+}
+
+function pmDateColor(days) {
+  if (days == null) return COLORS.neutral
+  if (days <= 30) return COLORS.critical
+  if (days <= 90) return COLORS.monitor
+  return COLORS.healthy
 }
 
 function mtbmBadge(recommendation) {
@@ -153,8 +186,6 @@ export default function DynamicAssetTable({
     return acc
   }, { Critical: 0, 'At Risk': 0, Monitor: 0, Healthy: 0 })
 
-  const hasMissingMtbf = sorted.some(a => a.mtbf?.mtbf_days == null)
-
   const activeAsset = sorted.find(a => a.asset_id === activeId) ?? null
   const activeExplanation = activeId ? explanations?.[activeId] ?? null : null
   const isLoading = loadingId != null
@@ -163,16 +194,35 @@ export default function DynamicAssetTable({
   const activeBreachAlerts = activeBreachId ? breachAlerts?.[activeBreachId] ?? null : null
   const isBreachLoading = loadingBreachId != null
 
-  // Banner urgency comes from the same getHealthStatus() the Health Status
-  // column and summary counts use, rather than a separate breach-severity
-  // threshold, so the two never disagree about which assets are urgent.
+  // The "immediate attention" (red) banner is strictly getHealthStatus()-driven,
+  // same as the Health Status column, so the two never disagree about which
+  // assets are in the worst tier.
   const criticalAssets = sorted.filter(asset => {
     const health = getHealthStatus(computeRulDays(asset) ?? Infinity, asset.risk_factor ?? 0)
     return health.status === 'Critical'
   })
-  const atRiskAssets = sorted.filter(asset => {
+
+  // The "require scheduling" (orange) banner is broader than the Health Status
+  // column: an asset lands in it if its RUL/risk-factor health is 'At Risk',
+  // OR it has an unresolved high/medium severity breach, OR its next PM date
+  // is due within 30 days -- signals the RUL-based Health Status badge alone
+  // doesn't capture. This means an asset can appear here while its own row
+  // still shows a Healthy/Monitor badge; that's intentional (breach/PM-date
+  // urgency and RUL-health urgency are genuinely different signals), not a
+  // bug -- just don't assume this banner and the Health Status column always
+  // agree the way the red banner and column do.
+  const needsSchedulingAssets = sorted.filter(asset => {
     const health = getHealthStatus(computeRulDays(asset) ?? Infinity, asset.risk_factor ?? 0)
-    return health.status === 'At Risk'
+    if (health.status === 'At Risk') return true
+
+    const hasUnresolvedBreach = (asset.breach_summary?.high_severity ?? 0) > 0
+      || (asset.breach_summary?.medium_severity ?? 0) > 0
+    if (hasUnresolvedBreach) return true
+
+    const pmDays = daysUntil(asset.mtbm?.next_maintenance_date)
+    if (pmDays != null && pmDays <= 30) return true
+
+    return false
   })
 
   async function handleExplain(asset) {
@@ -221,12 +271,12 @@ export default function DynamicAssetTable({
         </div>
       )}
 
-      {criticalAssets.length === 0 && atRiskAssets.length > 0 && (
+      {criticalAssets.length === 0 && needsSchedulingAssets.length > 0 && (
         <div
           className="high-severity-banner"
           style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: COLORS.at_risk }}
         >
-          ⚠ {atRiskAssets.length} asset{atRiskAssets.length !== 1 ? 's' : ''} require scheduling: {atRiskAssets.map(a => a.asset_id).join(', ')}
+          ⚠ {needsSchedulingAssets.length} asset{needsSchedulingAssets.length !== 1 ? 's' : ''} require scheduling: {needsSchedulingAssets.map(a => a.asset_id).join(', ')}
         </div>
       )}
 
@@ -262,8 +312,8 @@ export default function DynamicAssetTable({
               <th className="th-score">Risk Factor</th>
               <th className="th-score">Breach Status</th>
               <th className="th-score">RUL (days)</th>
-              <th className="th-score">Est. MTBF</th>
               <th className="th-score">PM Interval</th>
+              <th className="th-score">Next PM Date</th>
               <th className="th-score">CI</th>
               <th></th>
               <th></th>
@@ -280,7 +330,8 @@ export default function DynamicAssetTable({
               const isBreachRowLoading = loadingBreachId === asset.asset_id
               const status = breachStatus(asset)
               const alertRequired = asset.breach_summary?.alert_required ?? false
-              const mtbmInfo = asset.mtbm?.mtbm_recommended_days != null ? mtbmArrow(asset.mtbm.recommendation) : null
+              const pmDays = daysUntil(asset.mtbm?.next_maintenance_date)
+              const pmDateLabel = formatShortDate(asset.mtbm?.next_maintenance_date)
               const health = getHealthStatus(rulDays ?? Infinity, asset.risk_factor ?? 0)
 
               return (
@@ -334,12 +385,16 @@ export default function DynamicAssetTable({
                     ) : '-'}
                   </td>
                   <td className="td-score">
-                    {asset.mtbf?.mtbf_days != null ? `${Math.round(asset.mtbf.mtbf_days)} d` : 'N/A*'}
+                    {asset.mtbm?.mtbm_recommended_days != null ? (
+                      <span className="mtbm-arrow" style={{ color: pmIntervalColor(asset.mtbm.recommendation) }}>
+                        {asset.mtbm.mtbm_recommended_days} d
+                      </span>
+                    ) : 'N/A'}
                   </td>
                   <td className="td-score">
-                    {mtbmInfo ? (
-                      <span className="mtbm-arrow" style={{ color: mtbmInfo.color }}>
-                        {asset.mtbm.mtbm_recommended_days} d {mtbmInfo.symbol}
+                    {pmDateLabel != null ? (
+                      <span style={{ color: pmDateColor(pmDays), fontWeight: 'bold' }}>
+                        {pmDateLabel}
                       </span>
                     ) : 'N/A'}
                   </td>
@@ -371,12 +426,6 @@ export default function DynamicAssetTable({
           </tbody>
         </table>
       </div>
-
-      {hasMissingMtbf && (
-        <p className="mtbf-footnote" style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '0.4rem' }}>
-          * Minimum 2 observed failures required for MTBF estimation
-        </p>
-      )}
 
       {activeId && activeAsset && (
         <div className="explain-backdrop" onClick={handleBackdropClick}>
@@ -550,9 +599,9 @@ function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, 
 
       <div className="mp-cards">
         <div className="mp-card">
-          <span className="mp-card-title">Est. MTBF</span>
+          <span className="mp-card-title">Historical MTBF</span>
           <span className="mp-card-value">
-            {mtbf?.mtbf_days != null ? `${mtbf.mtbf_days} days` : 'Insufficient data'}
+            {mtbf?.mtbf_days != null ? `${mtbf.mtbf_days} days` : 'N/A*'}
           </span>
           {mtbf?.mtbf_confidence && (
             <span className={`mp-confidence-badge ${confidenceClass(mtbf.mtbf_confidence)}`}>
@@ -560,13 +609,15 @@ function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, 
             </span>
           )}
           {mtbf?.mtbf_note && <p className="mp-card-note">{mtbf.mtbf_note}</p>}
+          <p className="mp-card-note">Requires 2+ observed failures to calculate. Based on failure log history only.</p>
         </div>
 
         <div className="mp-card">
-          <span className="mp-card-title">Optimal PM Interval</span>
+          <span className="mp-card-title">Recommended MTBM</span>
           <span className="mp-card-value">
             {mtbm?.mtbm_recommended_days != null ? `${mtbm.mtbm_recommended_days} days` : 'Insufficient data'}
           </span>
+          <span className="mp-card-sub">Optimal interval based on asset risk and degradation rate</span>
           {(pmIntervalSource || pmIntervalConfidence) && (
             <span className="mp-card-sub">
               Based on: {pmIntervalSource ?? 'default'} ({pmIntervalConfidence ?? 'low'} confidence)
