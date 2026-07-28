@@ -32,7 +32,6 @@ def get_dynamic_feature_names(criteria_config: dict) -> list[str]:
     n = _n_criteria(criteria_config)
 
     names = [
-        "total_runtime_hours",
         "failures_last_90_days",
         "days_since_last_event",
         "total_failure_count",
@@ -78,16 +77,15 @@ def build_dynamic_feature_vector(asset_snapshot: dict,
                                   criteria_config: dict,
                                   weights: list,
                                   scores_raw: dict,
-                                  breaches: list = None,
-                                  use_runtime_hours: bool = True) -> list:
+                                  breaches: list = None) -> list:
+    # NOTE: total_runtime_hours intentionally excluded from feature
+    # vector. It is an absolute cumulative counter that varies by
+    # asset age and misleads prediction on assets with different
+    # expected lifetimes than training data. Use rolling sensor
+    # statistics and trend features instead for degradation state.
     n = _n_criteria(criteria_config)
     vector = []
 
-    if use_runtime_hours:
-        runtime_hours_value = asset_snapshot.get("total_runtime_hours", 0)
-    else:
-        runtime_hours_value = 0.0
-    vector.append(_safe_float(runtime_hours_value, "total_runtime_hours"))
     vector.append(_safe_float(asset_snapshot.get("failures_last_90_days", 0), "failures_last_90_days"))
     vector.append(_safe_float(asset_snapshot.get("days_since_last_event", 0), "days_since_last_event"))
     vector.append(_safe_float(asset_snapshot.get("total_failure_count", 0), "total_failure_count"))
