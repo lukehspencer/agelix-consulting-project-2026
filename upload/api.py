@@ -420,6 +420,7 @@ def predict_all(body: PredictAllInput):
 
         vec = build_dynamic_feature_vector(
             snap, criteria_config, body.weights, raw_scores, breaches,
+            use_runtime_hours=schema_summary.get("has_rul_column", True),
         )
 
         try:

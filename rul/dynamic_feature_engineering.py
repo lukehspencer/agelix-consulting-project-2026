@@ -78,11 +78,16 @@ def build_dynamic_feature_vector(asset_snapshot: dict,
                                   criteria_config: dict,
                                   weights: list,
                                   scores_raw: dict,
-                                  breaches: list = None) -> list:
+                                  breaches: list = None,
+                                  use_runtime_hours: bool = True) -> list:
     n = _n_criteria(criteria_config)
     vector = []
 
-    vector.append(_safe_float(asset_snapshot.get("total_runtime_hours", 0), "total_runtime_hours"))
+    if use_runtime_hours:
+        runtime_hours_value = asset_snapshot.get("total_runtime_hours", 0)
+    else:
+        runtime_hours_value = 0.0
+    vector.append(_safe_float(runtime_hours_value, "total_runtime_hours"))
     vector.append(_safe_float(asset_snapshot.get("failures_last_90_days", 0), "failures_last_90_days"))
     vector.append(_safe_float(asset_snapshot.get("days_since_last_event", 0), "days_since_last_event"))
     vector.append(_safe_float(asset_snapshot.get("total_failure_count", 0), "total_failure_count"))
