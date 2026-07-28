@@ -27,6 +27,7 @@ Built as an internship project for Agelix Consulting to extend their asset lifec
 | AHP Engine | Python, NumPy |
 | Telemetry Processing | Python, pandas, openpyxl |
 | ML Model | XGBoost, scikit-learn, joblib |
+| Physics-Based Projection | SciPy (`curve_fit`, `linregress`) -- no ML dependency |
 | GenAI Layer | Anthropic API (claude-sonnet-4-6) |
 | Schema Inference | Anthropic API (claude-sonnet-4-6) |
 | RAG Pipeline | ChromaDB (onnxruntime default embeddings), LangChain |
@@ -188,7 +189,15 @@ Every dynamic RUL prediction is checked against how far it extrapolates beyond w
 
 This anchor is deliberately **not** a fixed engineering lifetime constant (like the KSB Calio pump's documented 30,000-hour expected life) -- since the dynamic pipeline has to handle whatever asset type gets uploaded, a hardcoded pump-specific number would silently miscalibrate predictions for every other kind of asset. Instead, each trained model carries its own calibration anchor (the max RUL it was ever trained on), so calibration adapts automatically to whatever asset type that model was trained for. Older models trained before this feature existed simply skip calibration rather than erroring.
 
-When a prediction is calibrated, the dashboard shows a small ⚓ next to the RUL value and a note in the asset's explanation popup naming both the raw (uncalibrated) and calibrated day counts. The confidence interval shown alongside RUL is a fixed ±0.5 years (±182 days) band -- not a statistically derived interval, but a more useful approximation than the wider band used previously, given the RUL ranges typically seen in practice.
+When a prediction is calibrated, the dashboard shows a small ⚓ next to the value in the **ML Est.** column (calibration is specifically about the ML model, so the icon lives on the ML-only column, not the headline RUL estimate -- see Degradation Projection and Model Selection below) and a note in the asset's explanation popup naming both the raw (uncalibrated) and calibrated day counts. The confidence interval shown alongside RUL is a fixed ±0.5 years (±182 days) band -- not a statistically derived interval, but a more useful approximation than the wider band used previously, given the RUL ranges typically seen in practice.
+
+### Degradation Projection and Model Selection
+
+Alongside the XGBoost prediction, every uploaded asset also gets a second, independent RUL estimate from pure sensor-trend extrapolation -- no training data required, no ML involved. For each sensor with a defined risk threshold, a linear and an exponential curve are fit to its historical readings (whichever fits better), and the model projects how many days until that sensor crosses into its worst scoring band. The soonest-crossing sensor becomes the asset's "degradation projection" RUL and is named as the limiting factor.
+
+The dashboard doesn't just average the two estimates -- it picks whichever is most appropriate for the situation. When the ML and degradation-projection estimates agree closely, it uses their average. When they diverge significantly, it trusts the degradation projection only if that projection itself has high or medium confidence (enough sensor history and a good curve fit); otherwise it falls back to the ML estimate. The selected "primary" estimate -- not the raw ML value -- is what drives the Health Status, sort order, and both urgency banners everywhere in the dashboard, so risk ranking always reflects the model the system judged most trustworthy for that specific asset.
+
+The risk ranking table reflects this with three related columns: **RUL Est.** (the primary/selected estimate, with a colored badge and a small label showing which model was selected -- ML, Deg. Proj., or Avg -- plus a consensus indicator showing how closely the two models agreed), and two plain, unstyled reference columns, **ML Est.** and **Deg. Proj.**, showing the two individual estimates without any color-coding of their own. The asset explanation popup breaks this down further: the primary estimate and the reason it was selected, both individual model estimates side by side, and a "Degradation Projection" section listing every sensor trending toward its threshold with a projected crossing date.
 
 ### Approval Audit Trail
 
@@ -212,15 +221,17 @@ Both feed the RUL model as additional features and surface in the dashboard: a M
 
 For uploaded assets, every scoring pass also computes three simplified, deterministic approximations (no API calls, and explicitly not full Weibull statistical reliability models):
 
-- **Estimated MTBF** (mean time between failures) -- derived from the asset's observed failure count and total runtime, with a confidence label (low/medium/high) based on how many failures were actually observed. With zero recorded failures, MTBF is deliberately shown as unavailable (`N/A*`, with a footnote) rather than a fabricated estimate -- there's no data to estimate from.
-- **Recommended maintenance interval (MTBM)** -- a risk-adjusted fraction of the estimated MTBF, compared against the asset's **approved PM interval** (the SME-approved value if one was set during criteria review, else Claude's recommendation from schema inference, else a 90-day fallback) to recommend shortening, extending, or maintaining it, plus a suggested next maintenance date. When MTBF is unavailable, this recommends maintaining the current interval rather than showing nothing -- the safer default when there's no failure history to optimize against.
+- **Estimated MTBF** (mean time between failures) -- derived from the asset's observed failure count and total runtime, with a confidence label (low/medium/high) based on how many failures were actually observed. With zero recorded failures, MTBF is deliberately shown as unavailable (`N/A*`) rather than a fabricated estimate -- there's no data to estimate from. MTBF is popup-only ("Historical MTBF" card); it doesn't have its own column in the risk ranking table.
+- **Recommended maintenance interval (MTBM)** -- when MTBF is available, a risk-adjusted fraction of it, compared against the asset's **approved PM interval** (the SME-approved value if one was set during criteria review, else Claude's recommendation from schema inference, else a 90-day fallback) to recommend shortening, extending, or maintaining it, plus a suggested next maintenance date. When MTBF is unavailable, MTBM falls back to a **risk-only adjustment** of the current interval instead -- higher AHP risk shortens it (up to 50% at maximum risk), capped at recommending "shorten" or "maintain" (never "extend," since there's no failure data to justify lengthening it). Either way the table shows this as two columns: **PM Interval** (the recommended days, red if shortening is recommended, green otherwise) and **Next PM Date** (color-coded by how soon it falls -- red within 30 days, yellow within 90, green beyond).
 - **Replace vs. maintain** -- a basic amortized-cost comparison between ongoing maintenance spend and an estimated (or uploaded) replacement cost.
 
-These appear in the dashboard as a "Maintenance Planning" section of the asset explanation popup (three cards -- MTBF, PM interval with its source and confidence, economic decision -- plus a highlighted next-maintenance date) and as two extra columns, "Est. MTBF" and "PM Interval", in the risk ranking table.
+These appear in the dashboard as a "Maintenance Planning" section of the asset explanation popup ("Historical MTBF" and "Recommended MTBM" cards plus economic decision, and a highlighted next-maintenance date) and as the PM Interval / Next PM Date columns in the risk ranking table.
 
 ### Health Status and Urgency
 
-Each uploaded asset gets a Health Status -- Critical, At Risk, Monitor, or Healthy -- computed from RUL first and risk factor second (an asset with very little remaining life reads Critical regardless of its risk score; risk factor only decides the status once RUL itself looks healthy). This single function drives everything urgency-related in the dashboard so nothing can disagree with anything else: the Health Status column and colored badge, the risk-ranking sort order (most urgent first, then soonest RUL within a tier), the summary counts banner, and the "assets require attention" banner at the top of the table (red for any Critical assets, orange for At Risk when there's no Critical). Risk Factor and RUL color pills, the breach status badge, and the MTBM shorten/extend/maintain indicator all share the same red/orange/yellow/green/grey palette for visual consistency.
+Each uploaded asset gets a Health Status -- Critical, At Risk, Monitor, or Healthy -- computed from RUL first and risk factor second (an asset with very little remaining life reads Critical regardless of its risk score; risk factor only decides the status once RUL itself looks healthy). The RUL used here is always the **primary/selected** estimate (see Degradation Projection and Model Selection), never just the raw ML value. This single function drives the Health Status column and colored badge, the risk-ranking sort order (most urgent first, then soonest RUL within a tier), and the summary counts banner.
+
+The "assets require attention" banner at the top of the table is two-tiered: red, for any Critical-health assets, is strictly Health-Status-driven so it never disagrees with the column. Orange, "require scheduling," is broader -- it also includes any asset with an unresolved high/medium severity breach or a next maintenance date due within 30 days, even if that asset's own Health Status badge still reads Healthy or Monitor. That's intentional: breach and maintenance-due urgency are different signals from RUL-based health, and the orange banner is meant to catch both. Risk Factor and RUL color pills, the breach status badge, and the MTBM shorten/extend/maintain indicator all share the same red/orange/yellow/green/grey palette for visual consistency; the ML Est. and Deg. Proj. columns are deliberately left out of that palette since they're plain reference numbers, not urgency signals in their own right.
 
 ### GenAI Explanations
 
@@ -370,6 +381,8 @@ agelix-consulting-project-2026/
 |   +-- rul_explainer.py           # Anthropic API explanation (+ correlation summary)
 |   +-- breach_explainer.py        # On-demand Anthropic API breach alerts
 |   +-- mtbf_mtbm.py               # Deterministic MTBF/MTBM/replace-vs-maintain estimates
+|   +-- physics_rul.py             # Physics-based sensor trend extrapolation, zero ML dependency
+|   +-- consensus_rul.py           # select_rul() -- picks ML, physics, or their average as primary
 |   +-- dynamic_*.py               # Dynamic equivalents for uploaded assets
 |   +-- dynamic_train_cli.py       # Standalone CLI: python -m rul.dynamic_train_cli --file <path>
 |   +-- model_registry.py          # list_models() / find_model() / get_model_bundle()

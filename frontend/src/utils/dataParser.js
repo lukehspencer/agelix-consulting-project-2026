@@ -178,7 +178,7 @@ export async function parseUploadedFile(file) {
 export function downloadTemplate() {
   const headers = REQUIRED_FIELDS.join(',')
   const example = [
-    'KSB-CALIO-3040-9000', '"KSB Calio 3040 - Unit 9000"', 'KSB', 'Calio 30-40', '"Plant 2"',
+    'ASSET-0001', '"Example Asset - Unit 1"', 'Acme Manufacturing', 'Model-100', '"Plant 1"',
     '8500', '22',
     '6', 'High', '68.4', 'Worn', 'Good',
     '1', '45', '90', '2500', 'Stable',

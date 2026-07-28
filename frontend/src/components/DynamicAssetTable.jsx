@@ -25,8 +25,23 @@ const getHealthStatus = (rul_days, risk_factor) => {
   return { status: 'Healthy', color: COLORS.healthy }
 }
 
+// The "RUL days" used everywhere in this component (sorting, Health Status,
+// summary counts, banners, the RUL Est. column) is the model-SELECTED primary
+// estimate (rul_days, from rul/consensus_rul.py's select_rul()) -- ML,
+// physics, or their average, whichever the backend judged most appropriate --
+// not always the raw ML value. Falls back to the ML-only computation if
+// rul_days is ever absent (older cached results / defensive default).
 function computeRulDays(asset) {
+  if (asset.rul_days != null) return asset.rul_days
   return asset.rul_years != null ? Math.round(asset.rul_years * 365) : null
+}
+
+const SOURCE_LABELS = { ml: 'ML', physics: 'Deg. Proj.', average: 'Avg' }
+const SOURCE_COLORS = { ml: '#2563eb', physics: '#9333ea', average: '#16a34a' }
+
+function primarySourceBadge(source) {
+  if (!source || !(source in SOURCE_LABELS)) return null
+  return { label: SOURCE_LABELS[source], color: SOURCE_COLORS[source] }
 }
 
 function riskColor(val) {
@@ -120,6 +135,13 @@ function pmDateColor(days) {
   if (days <= 30) return COLORS.critical
   if (days <= 90) return COLORS.monitor
   return COLORS.healthy
+}
+
+function consensusBadge(consensus) {
+  if (consensus === 'high') return { symbol: '✓', label: 'Models agree', color: COLORS.healthy }
+  if (consensus === 'medium') return { symbol: '~', label: 'Similar', color: COLORS.monitor }
+  if (consensus === 'low') return { symbol: '⚠', label: 'Models diverge', color: COLORS.critical }
+  return null
 }
 
 function mtbmBadge(recommendation) {
@@ -311,7 +333,9 @@ export default function DynamicAssetTable({
               ))}
               <th className="th-score">Risk Factor</th>
               <th className="th-score">Breach Status</th>
-              <th className="th-score">RUL (days)</th>
+              <th className="th-score">RUL Est. (days)</th>
+              <th className="th-score">ML Est.</th>
+              <th className="th-score">Deg. Proj.</th>
               <th className="th-score">PM Interval</th>
               <th className="th-score">Next PM Date</th>
               <th className="th-score">CI</th>
@@ -333,6 +357,10 @@ export default function DynamicAssetTable({
               const pmDays = daysUntil(asset.mtbm?.next_maintenance_date)
               const pmDateLabel = formatShortDate(asset.mtbm?.next_maintenance_date)
               const health = getHealthStatus(rulDays ?? Infinity, asset.risk_factor ?? 0)
+              const mlRulDays = asset.rul_ml_days ?? null
+              const physicsRulDays = asset.rul_physics_days ?? asset.physics_projection?.physics_rul_days ?? null
+              const consensus = consensusBadge(asset.consensus)
+              const sourceBadge = primarySourceBadge(asset.rul_primary_source)
 
               return (
                 <tr key={asset.asset_id} className={isActive || isBreachActive ? 'row-expanded' : ''}>
@@ -375,14 +403,34 @@ export default function DynamicAssetTable({
                         <span className="rul-pill" style={{ backgroundColor: rulDaysColor(rulDays) }}>
                           {rulDays}
                         </span>
-                        {asset.rul_calibrated && (
-                          <span title="Prediction anchored to this asset type's observed training range"
-                                style={{fontSize: "10px", color: "#6b7280", marginLeft: "4px"}}>
-                              ⚓
-                          </span>
+                        {sourceBadge && (
+                          <div style={{ fontSize: '10px', color: sourceBadge.color, fontWeight: 'bold', marginTop: '2px' }}>
+                            {sourceBadge.label}
+                          </div>
+                        )}
+                        {consensus && (
+                          <div style={{ fontSize: '10px', color: consensus.color, marginTop: '2px' }}>
+                            {consensus.symbol} {consensus.label}
+                          </div>
                         )}
                       </>
                     ) : '-'}
+                  </td>
+                  <td className="td-score">
+                    {mlRulDays != null ? (
+                      <>
+                        <div style={{ fontSize: '10px', color: '#9ca3af' }}>ML</div>
+                        <span style={{ color: COLORS.neutral }}>{mlRulDays}</span>
+                      </>
+                    ) : <span style={{ color: COLORS.neutral }}>N/A</span>}
+                  </td>
+                  <td className="td-score">
+                    {physicsRulDays != null ? (
+                      <>
+                        <div style={{ fontSize: '10px', color: '#9ca3af' }}>Deg. Proj.</div>
+                        <span style={{ color: COLORS.neutral }}>{Math.round(physicsRulDays)}</span>
+                      </>
+                    ) : <span style={{ color: COLORS.neutral }}>N/A</span>}
                   </td>
                   <td className="td-score">
                     {asset.mtbm?.mtbm_recommended_days != null ? (
@@ -446,9 +494,15 @@ export default function DynamicAssetTable({
 
             {activeAsset.rul_calibrated && (
               <p className="mp-card-note" style={{ margin: '0.3rem 0 0.6rem', fontSize: '0.78rem', color: '#6b7280' }}>
-                Note: Raw model prediction was {activeAsset.rul_raw_days} days. Calibrated to {computeRulDays(activeAsset)} days based on this asset type's observed training range.
+                Note: Raw ML model prediction was {activeAsset.rul_raw_days} days. Calibrated to {activeAsset.rul_ml_days ?? computeRulDays(activeAsset)} days based on this asset type's observed training range.
               </p>
             )}
+
+            {/* Divider */}
+            <div className="explain-popup-divider" />
+
+            {/* Primary RUL Estimate */}
+            <PrimaryRulBreakdown asset={activeAsset} />
 
             {/* Divider */}
             <div className="explain-popup-divider" />
@@ -470,6 +524,13 @@ export default function DynamicAssetTable({
 
             {/* Divider */}
             <div className="explain-popup-divider" />
+
+            {/* Degradation Projection */}
+            <PhysicsProjection
+              physics={activeAsset.physics_projection}
+              mlRulDays={activeAsset.rul_ml_days ?? computeRulDays(activeAsset)}
+              consensus={activeAsset.consensus}
+            />
 
             {/* Explanation body */}
             <div className="explain-popup-body">
@@ -648,8 +709,79 @@ function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, 
   )
 }
 
+function PhysicsProjection({ physics, mlRulDays, consensus }) {
+  const projections = physics?.sensor_projections ?? {}
+  if (Object.keys(projections).length === 0) return null
+
+  const trendingUp = Object.entries(projections).filter(
+    ([, p]) => p.trend_direction === 'increasing' && p.days_to_threshold != null
+  )
+  const physicsRulDays = physics?.physics_rul_days ?? null
+
+  return (
+    <div className="physics-projection">
+      <h4 className="multi-sensor-title">Degradation Projection</h4>
+
+      {trendingUp.length > 0 && (
+        <ul className="correlated-pairs-list">
+          {trendingUp.map(([sensor, p]) => (
+            <li key={sensor} style={{ color: pmDateColor(p.days_to_threshold) }}>
+              {formatSensorName(sensor)}: {p.current_value.toFixed(2)} → threshold {p.threshold.toFixed(2)}{' '}
+              in ~{Math.round(p.days_to_threshold)} days ({p.projected_date})
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {physics?.limiting_sensor && physicsRulDays != null && (
+        <p className="mp-card-note" style={{ color: COLORS.at_risk, fontWeight: 'bold' }}>
+          ⚠ Limiting factor: {formatSensorName(physics.limiting_sensor)} projected to reach critical
+          threshold in {Math.round(physicsRulDays)} days
+        </p>
+      )}
+
+      {consensus && consensus !== 'unknown' && physicsRulDays != null && (
+        <p className="mp-card-note">
+          ML vs Degradation Projection consensus: {consensus} — ML predicts {mlRulDays != null ? Math.round(mlRulDays) : '-'}d,
+          projection estimates {Math.round(physicsRulDays)}d
+        </p>
+      )}
+    </div>
+  )
+}
+
+function PrimaryRulBreakdown({ asset }) {
+  if (asset.rul_days == null) return null
+
+  const source = primarySourceBadge(asset.rul_primary_source)
+
+  return (
+    <div className="maintenance-planning">
+      <h4 className="multi-sensor-title">Primary RUL Estimate</h4>
+
+      <div className="mp-card">
+        <span className="mp-card-title">Primary RUL Estimate: {asset.rul_days} days</span>
+        {source && (
+          <span className="mp-badge" style={{ backgroundColor: source.color, color: 'white' }}>
+            Source: {source.label} model
+          </span>
+        )}
+        {asset.rul_reason && <p className="mp-card-note">Why: {asset.rul_reason}</p>}
+        <span className="mp-card-sub">
+          ML Model estimate: {asset.rul_ml_days != null ? `${asset.rul_ml_days} days` : '-'}
+        </span>
+        <span className="mp-card-sub">
+          Degradation Projection: {asset.rul_physics_days != null ? `${asset.rul_physics_days} days` : 'N/A'}
+        </span>
+        <span className="mp-card-sub">Consensus: {asset.consensus ?? 'unknown'}</span>
+        <span className="mp-card-sub">Projection confidence: {asset.physics_confidence ?? 'low'}</span>
+      </div>
+    </div>
+  )
+}
+
 function StatsRow({ asset, criteria }) {
-  const rulDays = asset.rul_years != null ? Math.round(asset.rul_years * 365) : null
+  const rulDays = computeRulDays(asset)
   const ciLowDays = asset.ci_low != null ? Math.round(asset.ci_low * 365) : null
   const ciHighDays = asset.ci_high != null ? Math.round(asset.ci_high * 365) : null
   const top = topCriterion(asset, criteria)

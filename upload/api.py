@@ -18,6 +18,8 @@ from rul.dynamic_ml_rul_model import predict_adjusted_dynamic
 from rul.rul_explainer import explain
 from rul.breach_explainer import explain_all_breaches
 from rul.mtbf_mtbm import calculate_mtbf, calculate_mtbm, calculate_replace_vs_maintain
+from rul.physics_rul import assess_consensus
+from rul.consensus_rul import select_rul
 from rul import model_registry
 from data.column_resolver import get_sensor_columns
 from rag.retriever import retrieve_for_schema_inference, retrieve_for_explanation
@@ -429,6 +431,36 @@ def predict_all(body: PredictAllInput):
 
         rul_months = round(prediction["rul_years"] * 12, 1)
 
+        # Compare the same calibrated/adjusted RUL shown elsewhere in this
+        # response (not the raw pre-calibration value) against the physics
+        # projection, so the consensus assessment matches what the user
+        # actually sees in the RUL column.
+        physics = snap.get("physics_projection", {})
+        physics_rul_days = physics.get("physics_rul_days")
+        physics_confidence = physics.get("confidence", "low")
+        ml_rul_days = round(prediction["rul_years"] * 365)
+        consensus = assess_consensus(ml_rul_days, physics_rul_days)
+        if "sensor_projections" in physics:
+            physics["consensus_with_ml"] = consensus
+
+        # Picks a single "best" RUL estimate (ML, physics, or their average)
+        # based on model agreement and physics data quality, rather than
+        # always blending -- see rul/consensus_rul.py.
+        selection = select_rul(
+            ml_rul_days=ml_rul_days,
+            physics_rul_days=physics_rul_days,
+            consensus=consensus,
+            physics_confidence=physics_confidence,
+        )
+
+        print(f"Asset: {snap['asset_id']}")
+        print(f"  ML RUL: {ml_rul_days} days")
+        print(f"  Physics RUL: {physics_rul_days}")
+        print(f"  Physics confidence: {physics_confidence}")
+        print(f"  Consensus: {consensus}")
+        print(f"  Selected: {selection['primary_rul_days']} days ({selection['primary_source']})")
+        print(f"  Reason: {selection['reason']}")
+
         results.append({
             "asset_id": snap["asset_id"],
             "snapshot_date": snap.get("snapshot_date", ""),
@@ -450,6 +482,13 @@ def predict_all(body: PredictAllInput):
             "mtbf": mtbf_result,
             "mtbm": mtbm_result,
             "replace_vs_maintain": replace_maintain,
+            "consensus": consensus,
+            "physics_confidence": physics_confidence,
+            "rul_days": selection["primary_rul_days"],
+            "rul_primary_source": selection["primary_source"],
+            "rul_ml_days": selection["ml_rul_days"],
+            "rul_physics_days": selection["physics_rul_days"],
+            "rul_reason": selection["reason"],
             **{k: v for k, v in snap.items()
                if k not in ("asset_id", "snapshot_date")},
         })

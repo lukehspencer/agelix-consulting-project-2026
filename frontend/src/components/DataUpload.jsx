@@ -38,7 +38,7 @@ export default function DataUpload({ onDataLoaded, onReset, uploadInfo }) {
           <p className="upload-indicator">
             {uploadInfo
               ? <>Using uploaded data: <strong>{uploadInfo.filename}</strong> ({uploadInfo.count} pumps)</>
-              : 'Using default KSB Calio telemetry data (optional: upload your own)'}
+              : 'Using default asset telemetry data (optional: upload your own)'}
           </p>
         </div>
         <div className="upload-actions">

@@ -5,6 +5,7 @@ from datetime import timedelta
 import pandas as pd
 
 from data.column_resolver import resolve, is_failure_event
+from rul.physics_rul import project_asset_rul
 
 _TREND_WINDOW = 14
 
@@ -191,6 +192,19 @@ def aggregate_uploaded_data(file_path: str,
         trend_window = asset_tel.iloc[max(0, snapshot_idx - _TREND_WINDOW + 1):snapshot_idx + 1]
         correlation_features = compute_correlation_features(trend_window, sensor_cols)
 
+        # Physics-based sensor trend extrapolation, run alongside (not instead
+        # of) the ML feature set -- uses every row up to and including the
+        # snapshot, not just the trailing correlation window, since curve
+        # fitting benefits from as much history as is available. Never raises;
+        # project_asset_rul() returns a safe empty-projection dict on failure.
+        physics_projection = project_asset_rul(
+            telemetry_df=asset_tel.iloc[:snapshot_idx + 1],
+            criteria_config=criteria_config,
+            asset_id=str(asset_id),
+            date_column=date_col,
+            sensor_columns=sensor_cols,
+        )
+
         snapshot_out = {
             "asset_id": str(asset_id),
             "snapshot_date": str(snapshot_date.date()) if hasattr(snapshot_date, 'date') else str(snapshot_date),
@@ -213,6 +227,7 @@ def aggregate_uploaded_data(file_path: str,
             snapshot_out[std_key] = round(float(snapshot_dict.get(std_key, 0)), 4)
 
         snapshot_out.update(correlation_features)
+        snapshot_out["physics_projection"] = physics_projection
 
         failures_90 = 0
         days_since = 999
