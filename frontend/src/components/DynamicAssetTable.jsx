@@ -310,7 +310,7 @@ export default function DynamicAssetTable({
 
       <h2 className="section-title">Risk Ranking and RUL Summary</h2>
       <p className="section-sub">
-        Assets ranked by overall risk factor. Scores derived from AI-inferred criteria for {criteriaConfig.asset_type}.
+        Assets ranked by overall risk factor. Scores derived from AI-inferred criteria for {criteriaConfig?.asset_type || 'uploaded asset type'}.
       </p>
 
       <div className="health-status-summary" style={{ display: 'flex', gap: '1.5rem', margin: '0.5rem 0 1rem' }}>

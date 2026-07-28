@@ -26,10 +26,6 @@ app.include_router(rag_router)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 frontend_dist = os.path.join(BASE_DIR, "frontend", "dist")
 
-print(f"Frontend dist path: {frontend_dist}")
-print(f"Frontend dist exists: {os.path.exists(frontend_dist)}")
-print(f"Frontend dist contents: {os.listdir(frontend_dist) if os.path.exists(frontend_dist) else 'NOT FOUND'}")
-
 if os.path.exists(frontend_dist):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
 

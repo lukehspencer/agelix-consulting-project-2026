@@ -310,8 +310,6 @@ def _validate_config(config: dict, schema_summary: dict) -> None:
     if not fev:
         log_event_values = schema_summary.get("log_event_type_values", [])
         if not log_event_values:
-            print(f"[DEBUG] log_event_type_values: {log_event_values!r}")
-            print(f"[DEBUG] failure_event_values: {config.get('failure_event_values')!r}")
             raise RuntimeError(
                 "Schema inferrer: failure_event_values must be a non-empty list."
             )

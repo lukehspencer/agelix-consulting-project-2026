@@ -1039,7 +1039,7 @@ Model location: `rul/model.pkl`. Train/test split by Pump_ID (hold out 2 pumps).
 Training data: uploaded file, all rows with sufficient rolling window (skip first 7 per asset). Target: `row[criteria_config["column_roles"]["rul_target"]] / 365`.
 
 Feature vector construction (deterministic order, built by `rul/dynamic_feature_engineering.py`):
-1. total_runtime_hours, failures_last_90_days, days_since_last_event, total_failure_count (4 features)
+1. failures_last_90_days, days_since_last_event, total_failure_count (3 features)
 2. weights[0..N-1] (N features)
 3. For i in 0..N-1: weights[i] * convert_to_saaty(scores_raw[f"C{i+1}"]) (N features)
 4. risk_factor = sum of step 3 (1 feature)
@@ -1051,7 +1051,9 @@ Feature vector construction (deterministic order, built by `rul/dynamic_feature_
 10. `composite_stress_index` (1 feature)
 11. `breach_count`, `high_severity_count`, `medium_severity_count`, `max_exceeded_pct` -- computed from `ahp.threshold_breach_detector.detect_breaches()` and passed into `build_dynamic_feature_vector()` as the optional `breaches` parameter; all four default to 0.0 when `breaches` is `None` or empty (4 features)
 
-Total length: 4 + N + N + 1 + 2M + M + 3*C(M,2) + 1 + 4, where N = number of criteria (3-7) and M = number of unique sensor columns referenced by non-manual criteria. Variable across uploads but fixed for a given model. `get_dynamic_feature_names(criteria_config)` returns the matching name list in the same order -- always keep the two in lockstep when either changes.
+`total_runtime_hours` is intentionally excluded from this vector (it was removed after it was found to mislead predictions on assets whose expected lifetime differs from the training data -- see Key Design Constraints). It remains present on the asset snapshot dict itself (`dynamic_aggregator.py` still computes it) since `mtbf_mtbm.py` and the dashboard still read it directly; it is only excluded from the ML feature vector.
+
+Total length: 3 + N + N + 1 + 2M + M + 3*C(M,2) + 1 + 4, where N = number of criteria (3-7) and M = number of unique sensor columns referenced by non-manual criteria. Variable across uploads but fixed for a given model. `get_dynamic_feature_names(criteria_config)` returns the matching name list in the same order -- always keep the two in lockstep when either changes.
 
 All correlation/trend/breach features degrade gracefully to 0.0 via `column_resolver.resolve_sensor(snapshot, key, default=0.0)` with a logged warning if a key is missing from the snapshot -- never a hard failure. Steps 6-10 use the same sorted-pair key naming as `compute_correlation_features()` in `dynamic_aggregator.py` so lookups always match regardless of the sensor column's position in the original file.
 
@@ -1508,6 +1510,7 @@ API_BASE_URL=http://localhost:8000
 | `POST /upload/predict-all` resolves column-name lookups from `body.prediction_schema_summary` when present, falling back to `bundle["schema_summary"]` only when absent -- scoring thresholds/criteria/feature names still always come from `criteria_config` (bundle's or `approved_criteria_config`) | A prediction-mode upload's column names are not guaranteed to match the training file's; `aggregate_uploaded_data()` indexes the dataframe directly by these names and raises a raw `KeyError`, not a graceful default, if given the wrong file's schema |
 | `model_registry.find_model()` matches asset types by exact (case-insensitive) match first, then by word overlap, never by `model_path` guessing or hardcoded file paths | Keeps prediction-mode lookups working across minor asset-type name drift between separate Claude inferences of "the same" asset type |
 | `_calibrate_rul()`'s extrapolation anchor (`max_train_rul_years`) comes from each model's own training labels, never a hardcoded engineering lifetime constant (e.g. KSB's 30,000-hour spec) | The dynamic pipeline must work for arbitrary uploaded asset types; a pump-specific hardcoded constant would silently miscalibrate every non-pump asset type's predictions |
+| `total_runtime_hours` is permanently excluded from the dynamic feature vector (`rul/dynamic_feature_engineering.py`), for both training and inference | It is an absolute cumulative counter that varies by asset age and misleads prediction on assets with a different expected lifetime than the training assets; rolling sensor statistics and trend features carry the degradation signal instead. It still lives on the asset snapshot dict for `mtbf_mtbm.py` and the dashboard -- only the ML feature vector excludes it |
 | `rul/physics_rul.py` has zero ML/training dependency (pure numpy/scipy) and never raises -- every internal function has a safe default, and `project_asset_rul()` is additionally wrapped in a top-level try/except | It runs on every snapshot regardless of whether a dynamic model has ever been trained for that asset type; a physics failure must never block ML scoring |
 | Exponential trend-crossing projections in `physics_rul.py` require both `a > 0` and `b > 0` in `a*exp(b*t)+c`, never `b > 0` alone | A curve with `b > 0` but `a < 0` still plunges toward -inf, not +inf; checking only `b` produced a bogus ~10-year "crossing" for sensors that were actually improving |
 | Every computed float in `physics_rul.py` is passed through a `_finite()` sanitizer before being returned | `linregress` on a constant-value sensor produces `NaN`, which serializes as the invalid JSON token `NaN` and breaks `res.json()` parsing for the entire `/upload/predict-all` response, not just that one field |

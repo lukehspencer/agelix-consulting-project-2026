@@ -453,14 +453,6 @@ def predict_all(body: PredictAllInput):
             physics_confidence=physics_confidence,
         )
 
-        print(f"Asset: {snap['asset_id']}")
-        print(f"  ML RUL: {ml_rul_days} days")
-        print(f"  Physics RUL: {physics_rul_days}")
-        print(f"  Physics confidence: {physics_confidence}")
-        print(f"  Consensus: {consensus}")
-        print(f"  Selected: {selection['primary_rul_days']} days ({selection['primary_source']})")
-        print(f"  Reason: {selection['reason']}")
-
         results.append({
             "asset_id": snap["asset_id"],
             "snapshot_date": snap.get("snapshot_date", ""),

@@ -78,9 +78,6 @@ def validate_upload(file_path: str, require_rul_column: bool = False) -> dict:
     except Exception as exc:
         raise UploadValidationError(f"Cannot open file: {exc}") from exc
 
-    xl = pd.ExcelFile(file_path)
-    print(f"DEBUG sheet names found: {xl.sheet_names}")
-
     tel_sheet = _match_sheet(xls.sheet_names, _TELEMETRY_SHEET)
     if tel_sheet is None:
         raise UploadValidationError(
@@ -101,13 +98,6 @@ def validate_upload(file_path: str, require_rul_column: bool = False) -> dict:
         df_log = pd.read_excel(file_path, sheet_name="Failure & Maintenance Logs", header=1)
     if df_log.empty or len(df_log.columns) == 0:
         df_log = pd.read_excel(file_path, sheet_name="Failure & Maintenance Logs", header=2)
-
-    print(f"DEBUG df_log after fix columns: {list(df_log.columns)}")
-    print(f"DEBUG df_log shape: {df_log.shape}")
-
-    print(f"DEBUG log sheet columns: {list(df_log.columns)}")
-    print(f"DEBUG log sheet shape: {df_log.shape}")
-    print(f"DEBUG log sheet head:\n{df_log.head()}")
 
     if len(df_tel) < 10:
         raise UploadValidationError(
@@ -221,8 +211,6 @@ def validate_upload(file_path: str, require_rul_column: bool = False) -> dict:
         log_event_type_values = df_log[log_event_col].dropna().unique().tolist()
         log_event_type_values = [str(v).strip() for v in log_event_type_values if str(v).strip()]
         log_event_values = log_event_type_values
-        print(f"[DEBUG] log_event_type_column: {log_event_col!r}")
-        print(f"[DEBUG] log_event_type_values: {log_event_values!r}")
 
     log_extra_samples = {}
     for c in log_extra:
