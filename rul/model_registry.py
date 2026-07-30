@@ -69,7 +69,13 @@ def find_model(asset_type: str) -> str | None:
         if overlap > best_overlap:
             best_path, best_overlap = m["model_path"], overlap
 
-    return best_path
+    if best_overlap > 0:
+        return best_path
+
+    if len(models) == 1:
+        return models[0]["model_path"]
+
+    return None
 
 
 def get_model_bundle(model_path: str) -> dict:
