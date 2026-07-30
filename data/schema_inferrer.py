@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 _MODEL = "claude-sonnet-4-6"
-_MAX_TOKENS = 2500
+_MAX_TOKENS = 4000
 
 _LOG_SHEET = "Failure & Maintenance Logs"
 _PM_FAILURE_KEYWORDS = ("fail", "fault", "error")

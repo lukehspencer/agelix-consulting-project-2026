@@ -7,6 +7,7 @@ projects when each sensor will cross its failure threshold.
 
 import logging
 import math
+import warnings
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -36,6 +37,13 @@ def _fit_linear(days: np.ndarray, values: np.ndarray) -> dict:
     if len(days) < 3:
         return {"slope": 0, "intercept": values[-1], "r_squared": 0}
 
+    if np.std(values) < 0.001:
+        return {
+            "slope": 0,
+            "intercept": float(values[-1]),
+            "r_squared": 0
+        }
+
     slope, intercept, r, _, _ = linregress(days, values)
     return {
         "slope": _finite(slope),
@@ -52,6 +60,10 @@ def _fit_exponential(days: np.ndarray, values: np.ndarray) -> dict:
     def exp_func(t, a, b, c):
         return a * np.exp(b * t) + c
 
+    # Skip exponential fit if values have no meaningful variation
+    if np.std(values) < 0.001:
+        return None
+
     try:
         # Initial guess based on data range
         a0 = values[-1] - values[0]
@@ -60,13 +72,15 @@ def _fit_exponential(days: np.ndarray, values: np.ndarray) -> dict:
         # curve_fit's internal search can transiently probe large b values
         # before converging, which can overflow exp() -- harmless, scipy
         # handles it internally, just noisy without this suppressed.
-        with np.errstate(over="ignore"):
-            popt, _ = curve_fit(
-                exp_func, days, values,
-                p0=[a0, b0, c0],
-                maxfev=5000,
-                bounds=([-np.inf, -1, -np.inf], [np.inf, 1, np.inf])
-            )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            with np.errstate(over="ignore"):
+                popt, _ = curve_fit(
+                    exp_func, days, values,
+                    p0=[a0, b0, c0],
+                    maxfev=5000,
+                    bounds=([-np.inf, -1, -np.inf], [np.inf, 1, np.inf])
+                )
         fitted = exp_func(days, *popt)
         ss_res = np.sum((values - fitted) ** 2)
         ss_tot = np.sum((values - np.mean(values)) ** 2)
