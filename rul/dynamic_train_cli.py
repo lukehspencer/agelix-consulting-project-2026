@@ -13,6 +13,8 @@ never called from the API or frontend -- the user-facing upload flow only
 predicts against models trained by this script.
 """
 import argparse
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 from data.schema_inferrer import infer_criteria_config
 from data.upload_schema import UploadValidationError, validate_upload

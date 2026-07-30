@@ -1,4 +1,6 @@
 import logging
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 from datetime import timedelta
 from pathlib import Path
 

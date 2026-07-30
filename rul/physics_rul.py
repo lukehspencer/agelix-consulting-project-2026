@@ -34,15 +34,8 @@ def _fit_linear(days: np.ndarray, values: np.ndarray) -> dict:
     Fits a linear trend to sensor values over time.
     Returns slope, intercept, and R-squared goodness of fit.
     """
-    if len(days) < 3:
-        return {"slope": 0, "intercept": values[-1], "r_squared": 0}
-
-    if np.std(values) < 0.001:
-        return {
-            "slope": 0,
-            "intercept": float(values[-1]),
-            "r_squared": 0
-        }
+    if len(values) < 2 or np.std(values) < 0.001:
+        return {"slope": 0, "intercept": float(values[-1]), "r_squared": 0}
 
     slope, intercept, r, _, _ = linregress(days, values)
     return {
@@ -175,96 +168,98 @@ def project_sensor_rul(sensor_values: list,
             "projected_date": str or None  # ISO date string
         }
     """
-    if len(sensor_values) < 3:
-        return {
-            "days_to_threshold": None,
-            "current_value": sensor_values[-1] if sensor_values else 0,
-            "threshold": failure_threshold,
-            "trend_direction": "stable",
-            "trend_rate": 0,
-            "fit_method": "none",
-            "fit_quality": 0,
-            "already_breached": False,
-            "projected_date": None
-        }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        if len(sensor_values) < 3:
+            return {
+                "days_to_threshold": None,
+                "current_value": sensor_values[-1] if sensor_values else 0,
+                "threshold": failure_threshold,
+                "trend_direction": "stable",
+                "trend_rate": 0,
+                "fit_method": "none",
+                "fit_quality": 0,
+                "already_breached": False,
+                "projected_date": None
+            }
 
-    values = np.array(sensor_values, dtype=float)
-    days = np.arange(len(values), dtype=float)
-    current = values[-1]
+        values = np.array(sensor_values, dtype=float)
+        days = np.arange(len(values), dtype=float)
+        current = values[-1]
 
-    # Check if already breached
-    if current >= failure_threshold:
+        # Check if already breached
+        if current >= failure_threshold:
+            return {
+                "days_to_threshold": 0,
+                "current_value": float(current),
+                "threshold": failure_threshold,
+                "trend_direction": "increasing",
+                "trend_rate": 0,
+                "fit_method": "none",
+                "fit_quality": 0,
+                "already_breached": True,
+                "projected_date": datetime.today().strftime("%Y-%m-%d")
+            }
+
+        # Try exponential fit first (better for wear degradation)
+        exp_result = _fit_exponential(days, values)
+        linear_result = _fit_linear(days, values)
+
+        # Choose best fit
+        use_exponential = (
+            exp_result is not None and
+            exp_result["r_squared"] > linear_result["r_squared"] + 0.05
+        )
+
+        if use_exponential:
+            days_to = _days_to_threshold_exponential(
+                current, exp_result["params"],
+                failure_threshold, exp_result["func"]
+            )
+            fit_method = "exponential"
+            fit_quality = exp_result["r_squared"]
+            trend_rate = _finite(
+                exp_result["func"](len(values), *exp_result["params"]) -
+                exp_result["func"](len(values) - 1, *exp_result["params"])
+            )
+        else:
+            days_to = _days_to_threshold_linear(
+                current, linear_result["slope"], failure_threshold
+            )
+            fit_method = "linear"
+            fit_quality = linear_result["r_squared"]
+            trend_rate = _finite(linear_result["slope"])
+
+        # Determine trend direction
+        if trend_rate > 0.001:
+            trend_direction = "increasing"
+        elif trend_rate < -0.001:
+            trend_direction = "decreasing"
+        else:
+            trend_direction = "stable"
+
+        # Compute projected date
+        projected_date = None
+        if days_to is not None and days_to > 0:
+            proj = datetime.today() + timedelta(days=days_to)
+            projected_date = proj.strftime("%Y-%m-%d")
+
+        logger.info(
+            f"{sensor_name}: {fit_method} fit (R²={fit_quality:.2f}), "
+            f"trend={trend_rate:.4f}/day, days_to_threshold={days_to}"
+        )
+
         return {
-            "days_to_threshold": 0,
+            "days_to_threshold": round(days_to, 1) if days_to is not None else None,
             "current_value": float(current),
             "threshold": failure_threshold,
-            "trend_direction": "increasing",
-            "trend_rate": 0,
-            "fit_method": "none",
-            "fit_quality": 0,
-            "already_breached": True,
-            "projected_date": datetime.today().strftime("%Y-%m-%d")
+            "trend_direction": trend_direction,
+            "trend_rate": round(trend_rate, 4),
+            "fit_method": fit_method,
+            "fit_quality": round(fit_quality, 3),
+            "already_breached": False,
+            "projected_date": projected_date
         }
-
-    # Try exponential fit first (better for wear degradation)
-    exp_result = _fit_exponential(days, values)
-    linear_result = _fit_linear(days, values)
-
-    # Choose best fit
-    use_exponential = (
-        exp_result is not None and
-        exp_result["r_squared"] > linear_result["r_squared"] + 0.05
-    )
-
-    if use_exponential:
-        days_to = _days_to_threshold_exponential(
-            current, exp_result["params"],
-            failure_threshold, exp_result["func"]
-        )
-        fit_method = "exponential"
-        fit_quality = exp_result["r_squared"]
-        trend_rate = _finite(
-            exp_result["func"](len(values), *exp_result["params"]) -
-            exp_result["func"](len(values) - 1, *exp_result["params"])
-        )
-    else:
-        days_to = _days_to_threshold_linear(
-            current, linear_result["slope"], failure_threshold
-        )
-        fit_method = "linear"
-        fit_quality = linear_result["r_squared"]
-        trend_rate = _finite(linear_result["slope"])
-
-    # Determine trend direction
-    if trend_rate > 0.001:
-        trend_direction = "increasing"
-    elif trend_rate < -0.001:
-        trend_direction = "decreasing"
-    else:
-        trend_direction = "stable"
-
-    # Compute projected date
-    projected_date = None
-    if days_to is not None and days_to > 0:
-        proj = datetime.today() + timedelta(days=days_to)
-        projected_date = proj.strftime("%Y-%m-%d")
-
-    logger.info(
-        f"{sensor_name}: {fit_method} fit (R²={fit_quality:.2f}), "
-        f"trend={trend_rate:.4f}/day, days_to_threshold={days_to}"
-    )
-
-    return {
-        "days_to_threshold": round(days_to, 1) if days_to is not None else None,
-        "current_value": float(current),
-        "threshold": failure_threshold,
-        "trend_direction": trend_direction,
-        "trend_rate": round(trend_rate, 4),
-        "fit_method": fit_method,
-        "fit_quality": round(fit_quality, 3),
-        "already_breached": False,
-        "projected_date": projected_date
-    }
 
 
 def project_asset_rul(telemetry_df,
