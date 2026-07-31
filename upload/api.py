@@ -258,6 +258,7 @@ async def analyze_upload(file: UploadFile):
         try:
             snapshots = aggregate_uploaded_data(
                 str(file_path), schema_summary, criteria_config,
+                prediction_mode=True,
             )
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
@@ -319,6 +320,7 @@ async def analyze_upload(file: UploadFile):
     try:
         snapshots = aggregate_uploaded_data(
             str(file_path), schema_summary, criteria_config,
+            prediction_mode=False,
         )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -429,9 +431,14 @@ def predict_all(body: PredictAllInput):
         criteria_config.get("recommended_pm_interval_days", _PM_INTERVAL_DEFAULT_DAYS),
     )
 
+    prediction_mode = not schema_summary.get("has_rul_column", True)
+
     try:
         snapshots = aggregate_uploaded_data(
-            body.file_path, schema_summary, criteria_config,
+            file_path=body.file_path,
+            schema_summary=schema_summary,
+            criteria_config=criteria_config,
+            prediction_mode=prediction_mode,
         )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))

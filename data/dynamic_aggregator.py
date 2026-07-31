@@ -118,7 +118,8 @@ def _resolve_log_asset_id_column(df_log: pd.DataFrame, configured_col: str | Non
 def aggregate_uploaded_data(file_path: str,
                             schema_summary: dict,
                             criteria_config: dict,
-                            rolling_window: int = 7) -> list[dict]:
+                            rolling_window: int = 7,
+                            prediction_mode: bool = False) -> list[dict]:
     xls = pd.ExcelFile(file_path, engine="openpyxl")
 
     tel_sheet = None
@@ -176,17 +177,24 @@ def aggregate_uploaded_data(file_path: str,
                 asset_tel[col].rolling(rolling_window, min_periods=1).std().fillna(0.0)
             )
 
-        # Spread snapshots across 50%-90% of each asset's lifecycle by its
-        # alphabetical position, so a multi-asset upload shows meaningful
-        # variation in risk/RUL instead of every asset being sampled at the
-        # same relative point. A single-asset upload keeps the prior 70%.
-        if n_assets <= 1:
-            snapshot_pct = 0.7
+        if prediction_mode:
+            # Real deployment prediction: score the asset's current state,
+            # i.e. its most recent telemetry row, not a lifecycle sample.
+            snapshot_idx = len(asset_tel) - 1
         else:
-            snapshot_pct = 0.5 + (i / max(n_assets - 1, 1)) * 0.4
+            # Training mode: spread snapshots across 50%-90% of each asset's
+            # lifecycle by its alphabetical position, so a multi-asset upload
+            # shows meaningful variation in risk/RUL instead of every asset
+            # being sampled at the same relative point. A single-asset
+            # upload keeps the prior 70%.
+            if n_assets <= 1:
+                snapshot_pct = 0.7
+            else:
+                snapshot_pct = 0.5 + (i / max(n_assets - 1, 1)) * 0.4
 
-        snapshot_idx = int(len(asset_tel) * snapshot_pct)
-        snapshot_idx = min(snapshot_idx, len(asset_tel) - 1)
+            snapshot_idx = int(len(asset_tel) * snapshot_pct)
+            snapshot_idx = min(snapshot_idx, len(asset_tel) - 1)
+
         snapshot = asset_tel.iloc[snapshot_idx]
         snapshot_date = snapshot[date_col]
         snapshot_dict = snapshot.to_dict()
@@ -214,10 +222,16 @@ def aggregate_uploaded_data(file_path: str,
             "true_rul_days": float(snapshot_dict.get(rul_col, 0)),
         }
 
-        logging.info(
-            f"{asset_id}: snapshot at {snapshot_pct:.0%} of lifecycle, "
-            f"True_RUL_Days={snapshot_out['true_rul_days']:.0f}"
-        )
+        if prediction_mode:
+            logging.info(
+                f"{asset_id}: snapshot at most recent row (prediction mode), "
+                f"True_RUL_Days={snapshot_out['true_rul_days']:.0f}"
+            )
+        else:
+            logging.info(
+                f"{asset_id}: snapshot at {snapshot_pct:.0%} of lifecycle, "
+                f"True_RUL_Days={snapshot_out['true_rul_days']:.0f}"
+            )
 
         for col in sensor_cols:
             snapshot_out[col] = float(snapshot_dict.get(col, 0))
