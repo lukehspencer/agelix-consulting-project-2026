@@ -183,10 +183,11 @@ function ModeBanner({ mode, trainingResult, modelInfo }) {
           padding: '0.75rem 1rem', marginBottom: '0.75rem', fontSize: '0.85rem', color: '#1e40af',
         }}
       >
-        <p style={{ margin: 0, fontWeight: 700 }}>Prediction mode — using pre-trained model</p>
+        <p style={{ margin: 0, fontWeight: 700 }}>
+          Prediction mode — using pre-trained {modelInfo?.model_asset_type ?? 'Unknown'} model
+        </p>
         <p style={{ margin: '0.3rem 0 0' }}>
-          Model: {modelInfo?.model_asset_type ?? 'Unknown'} — trained on{' '}
-          {modelInfo?.feature_count ?? '?'} features
+          Criteria loaded from trained model (not re-inferred by Claude)
         </p>
         <p style={{ margin: '0.3rem 0 0', fontStyle: 'italic' }}>
           Note: predictions are based on patterns learned from historical run-to-failure data.

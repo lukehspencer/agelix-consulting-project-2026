@@ -224,10 +224,90 @@ async def analyze_upload(file: UploadFile):
     except UploadValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    # Prediction mode: no RUL target column -- use the pre-trained model's
+    # CriteriaConfig directly so the feature vector always matches what the
+    # model was built on, regardless of what Claude might infer from a
+    # fresh schema inference of the uploaded file.
+    if not schema_summary.get("has_rul_column"):
+        model_path = model_registry.find_model("")
+        if model_path is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No pre-trained model found. "
+                    "Train a model first using:\n"
+                    "python -m rul.dynamic_train_cli --file <historical_data.xlsx>"
+                ),
+            )
+
+        bundle = model_registry.get_model_bundle(model_path)
+        criteria_config = bundle["criteria_config"]
+
+        bundle_sensor_cols = sorted(bundle["schema_summary"].get("sensor_columns", []))
+        upload_sensor_cols = sorted(schema_summary.get("sensor_columns", []))
+        if bundle_sensor_cols != upload_sensor_cols:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Uploaded file sensor columns do not match pre-trained model.\n"
+                    f"Model expects: {bundle_sensor_cols}\n"
+                    f"File has: {upload_sensor_cols}"
+                ),
+            )
+
+        try:
+            snapshots = aggregate_uploaded_data(
+                str(file_path), schema_summary, criteria_config,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        default_manual = {
+            c["id"]: c["default_score"]
+            for c in criteria_config["criteria"] if c.get("manual_input")
+        }
+
+        assets = []
+        for snap in snapshots:
+            try:
+                result = score_asset_dynamic(snap, criteria_config, default_manual)
+                raw_scores = result.pop("raw_scores")
+                assets.append({
+                    "asset_id": snap["asset_id"],
+                    "snapshot_date": snap.get("snapshot_date", ""),
+                    "scores": result,
+                    "raw_scores": raw_scores,
+                    "rul_years": None,
+                    "rul_months": None,
+                    **{k: v for k, v in snap.items()
+                       if k not in ("asset_id", "snapshot_date")},
+                })
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+
+        model_asset_type = criteria_config.get("asset_type", "unknown")
+        return {
+            "mode": "prediction",
+            "criteria_config": criteria_config,
+            "criteria_source": "pre_trained_model",
+            "schema_summary": schema_summary,
+            "prediction_schema_summary": schema_summary,
+            "training_result": None,
+            "assets": assets,
+            "model_path": model_path,
+            "model_used": model_path,
+            "model_asset_type": model_asset_type,
+            "feature_count": len(bundle.get("feature_names", [])),
+        }
+
+    # Training mode: RUL target column present -- call Claude to infer AHP
+    # criteria and train a fresh model on this historical run-to-failure data.
     retrieved_context = retrieve_for_schema_inference(schema_summary)
 
     try:
-        criteria_config = infer_criteria_config(schema_summary, retrieved_context, file_path=str(file_path))
+        criteria_config = infer_criteria_config(
+            schema_summary, retrieved_context, file_path=str(file_path)
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -266,68 +346,31 @@ async def analyze_upload(file: UploadFile):
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
-    # Training mode: this upload carries a RUL target column, so it is
-    # historical run-to-failure data -- train a fresh model on it and save it
-    # to the registry for future prediction-mode uploads of this asset type.
-    if schema_summary.get("has_rul_column"):
-        try:
-            model_output_path = model_registry.model_path_for_asset_type(
-                criteria_config.get("asset_type", "unknown"),
-            )
-            training_result = train_dynamic_model(
-                str(file_path), schema_summary, criteria_config,
-                model_output_path=model_output_path,
-            )
-        except (ValueError, RuntimeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
-
-        _generate_failure_case(criteria_config, training_result)
-
-        return {
-            "mode": "training",
-            "criteria_config": criteria_config,
-            "schema_summary": schema_summary,
-            "training_result": {
-                "train_rmse": training_result["train_rmse"],
-                "test_rmse": training_result["test_rmse"],
-                "n_train_samples": training_result["n_train_samples"],
-                "n_test_samples": training_result["n_test_samples"],
-            },
-            "assets": assets,
-            "model_path": training_result["model_path"],
-        }
-
-    # Prediction mode: no RUL target column, so this is current telemetry to
-    # be scored against an already-trained model, never used to train one.
-    model_path = model_registry.find_model(criteria_config.get("asset_type", "unknown"))
-    if model_path is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"No pre-trained model found for asset type "
-                f"'{criteria_config.get('asset_type', 'unknown')}'. "
-                "Train a model first using:\n"
-                "python -m rul.dynamic_train_cli --file <historical_data.xlsx>"
-            ),
+    try:
+        model_output_path = model_registry.model_path_for_asset_type(
+            criteria_config.get("asset_type", "unknown"),
         )
+        training_result = train_dynamic_model(
+            str(file_path), schema_summary, criteria_config,
+            model_output_path=model_output_path,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
-    bundle = model_registry.get_model_bundle(model_path)
-    model_asset_type = bundle.get("criteria_config", {}).get("asset_type", "unknown")
+    _generate_failure_case(criteria_config, training_result)
 
     return {
-        "mode": "prediction",
+        "mode": "training",
         "criteria_config": criteria_config,
         "schema_summary": schema_summary,
-        # Column names detected from THIS prediction file -- must be sent back
-        # on /upload/predict-all so it reads the prediction file's actual
-        # columns instead of the pre-trained bundle's training-file schema.
-        "prediction_schema_summary": schema_summary,
-        "training_result": None,
+        "training_result": {
+            "train_rmse": training_result["train_rmse"],
+            "test_rmse": training_result["test_rmse"],
+            "n_train_samples": training_result["n_train_samples"],
+            "n_test_samples": training_result["n_test_samples"],
+        },
         "assets": assets,
-        "model_path": model_path,
-        "model_used": model_path,
-        "model_asset_type": model_asset_type,
-        "feature_count": len(bundle.get("feature_names", [])),
+        "model_path": training_result["model_path"],
     }
 
 
