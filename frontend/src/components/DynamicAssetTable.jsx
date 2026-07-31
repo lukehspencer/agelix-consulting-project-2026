@@ -36,6 +36,15 @@ function computeRulDays(asset) {
   return asset.rul_years != null ? Math.round(asset.rul_years * 365) : null
 }
 
+// CI is a fixed +-6 month band around the primary/selected RUL (rul_days),
+// not the raw ML model's own confidence interval -- keeps the displayed
+// range consistent with whichever estimate (ML, physics, or their average)
+// is actually shown as the headline RUL number.
+function computeCiDays(rulDays) {
+  if (rulDays == null) return { ciLowDays: null, ciHighDays: null }
+  return { ciLowDays: Math.max(0, rulDays - 182), ciHighDays: rulDays + 182 }
+}
+
 const SOURCE_LABELS = { ml: 'ML', physics: 'Deg. Proj.', average: 'Avg' }
 const SOURCE_COLORS = { ml: '#2563eb', physics: '#9333ea', average: '#16a34a' }
 
@@ -334,8 +343,6 @@ export default function DynamicAssetTable({
               <th className="th-score">Risk Factor</th>
               <th className="th-score">Breach Status</th>
               <th className="th-score">RUL Est. (days)</th>
-              <th className="th-score">ML Est.</th>
-              <th className="th-score">Deg. Proj.</th>
               <th className="th-score">PM Interval</th>
               <th className="th-score">Next PM Date</th>
               <th className="th-score">CI</th>
@@ -346,8 +353,7 @@ export default function DynamicAssetTable({
           <tbody>
             {sorted.map(asset => {
               const rulDays = computeRulDays(asset)
-              const ciLowDays = asset.ci_low != null ? Math.round(asset.ci_low * 365) : null
-              const ciHighDays = asset.ci_high != null ? Math.round(asset.ci_high * 365) : null
+              const { ciLowDays, ciHighDays } = computeCiDays(rulDays)
               const isActive = activeId === asset.asset_id
               const isRowLoading = loadingId === asset.asset_id
               const isBreachActive = activeBreachId === asset.asset_id
@@ -357,8 +363,6 @@ export default function DynamicAssetTable({
               const pmDays = daysUntil(asset.mtbm?.next_maintenance_date)
               const pmDateLabel = formatShortDate(asset.mtbm?.next_maintenance_date)
               const health = getHealthStatus(rulDays ?? Infinity, asset.risk_factor ?? 0)
-              const mlRulDays = asset.rul_ml_days ?? null
-              const physicsRulDays = asset.rul_physics_days ?? asset.physics_projection?.physics_rul_days ?? null
               const consensus = consensusBadge(asset.consensus)
               const sourceBadge = primarySourceBadge(asset.rul_primary_source)
 
@@ -415,22 +419,6 @@ export default function DynamicAssetTable({
                         )}
                       </>
                     ) : '-'}
-                  </td>
-                  <td className="td-score">
-                    {mlRulDays != null ? (
-                      <>
-                        <div style={{ fontSize: '10px', color: '#9ca3af' }}>ML</div>
-                        <span style={{ color: COLORS.neutral }}>{mlRulDays}</span>
-                      </>
-                    ) : <span style={{ color: COLORS.neutral }}>N/A</span>}
-                  </td>
-                  <td className="td-score">
-                    {physicsRulDays != null ? (
-                      <>
-                        <div style={{ fontSize: '10px', color: '#9ca3af' }}>Deg. Proj.</div>
-                        <span style={{ color: COLORS.neutral }}>{Math.round(physicsRulDays)}</span>
-                      </>
-                    ) : <span style={{ color: COLORS.neutral }}>N/A</span>}
                   </td>
                   <td className="td-score">
                     {asset.mtbm?.mtbm_recommended_days != null ? (
@@ -501,8 +489,8 @@ export default function DynamicAssetTable({
             {/* Divider */}
             <div className="explain-popup-divider" />
 
-            {/* Primary RUL Estimate */}
-            <PrimaryRulBreakdown asset={activeAsset} />
+            {/* Model Details (collapsed by default) */}
+            <ModelDetails asset={activeAsset} />
 
             {/* Divider */}
             <div className="explain-popup-divider" />
@@ -750,40 +738,46 @@ function PhysicsProjection({ physics, mlRulDays, consensus }) {
   )
 }
 
-function PrimaryRulBreakdown({ asset }) {
+function ModelDetails({ asset }) {
+  const [expanded, setExpanded] = useState(false)
+
   if (asset.rul_days == null) return null
 
-  const source = primarySourceBadge(asset.rul_primary_source)
+  const sourceLabel = SOURCE_LABELS[asset.rul_primary_source] ?? asset.rul_primary_source ?? '-'
 
   return (
-    <div className="maintenance-planning">
-      <h4 className="multi-sensor-title">Primary RUL Estimate</h4>
+    <div className="model-details">
+      <button
+        type="button"
+        className="model-details-toggle"
+        onClick={() => setExpanded(v => !v)}
+        aria-expanded={expanded}
+      >
+        {expanded ? 'Hide model details ▲' : 'Show model details ▼'}
+      </button>
 
-      <div className="mp-card">
-        <span className="mp-card-title">Primary RUL Estimate: {asset.rul_days} days</span>
-        {source && (
-          <span className="mp-badge" style={{ backgroundColor: source.color, color: 'white' }}>
-            Source: {source.label} model
+      {expanded && (
+        <div className="mp-card model-details-body">
+          <span className="mp-card-title">How this RUL was calculated:</span>
+          <p className="mp-card-note">Primary estimate: {asset.rul_days} days ({sourceLabel})</p>
+          {asset.rul_reason && <p className="mp-card-note">Reason: {asset.rul_reason}</p>}
+          <span className="mp-card-sub">
+            ML Model: {asset.rul_ml_days != null ? `${asset.rul_ml_days} days` : '-'}
           </span>
-        )}
-        {asset.rul_reason && <p className="mp-card-note">Why: {asset.rul_reason}</p>}
-        <span className="mp-card-sub">
-          ML Model estimate: {asset.rul_ml_days != null ? `${asset.rul_ml_days} days` : '-'}
-        </span>
-        <span className="mp-card-sub">
-          Degradation Projection: {asset.rul_physics_days != null ? `${asset.rul_physics_days} days` : 'N/A'}
-        </span>
-        <span className="mp-card-sub">Consensus: {asset.consensus ?? 'unknown'}</span>
-        <span className="mp-card-sub">Projection confidence: {asset.physics_confidence ?? 'low'}</span>
-      </div>
+          <span className="mp-card-sub">
+            Degradation Projection: {asset.rul_physics_days != null ? `${asset.rul_physics_days} days` : 'N/A'}
+          </span>
+          <span className="mp-card-sub">Consensus: {asset.consensus ?? 'unknown'}</span>
+          <span className="mp-card-sub">Physics confidence: {asset.physics_confidence ?? 'low'}</span>
+        </div>
+      )}
     </div>
   )
 }
 
 function StatsRow({ asset, criteria }) {
   const rulDays = computeRulDays(asset)
-  const ciLowDays = asset.ci_low != null ? Math.round(asset.ci_low * 365) : null
-  const ciHighDays = asset.ci_high != null ? Math.round(asset.ci_high * 365) : null
+  const { ciLowDays, ciHighDays } = computeCiDays(rulDays)
   const top = topCriterion(asset, criteria)
 
   const stats = [

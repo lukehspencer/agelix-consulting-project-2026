@@ -1946,6 +1946,29 @@ body {
   margin: 10px 0 0;
 }
 
+.model-details {
+  padding: 12px 18px;
+}
+
+.model-details-toggle {
+  background: none;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.4rem;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+}
+
+.model-details-toggle:hover {
+  background: #f8fafc;
+}
+
+.model-details-body {
+  margin-top: 10px;
+}
+
 .mtbm-arrow {
   font-weight: 600;
   white-space: nowrap;
