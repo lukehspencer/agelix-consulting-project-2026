@@ -261,6 +261,7 @@ async def analyze_upload(file: UploadFile):
                 prediction_mode=True,
             )
         except Exception as exc:
+            print(f"UPLOAD ANALYZE ERROR: {type(exc).__name__}: {str(exc)}")
             raise HTTPException(status_code=422, detail=str(exc))
 
         default_manual = {
@@ -284,6 +285,7 @@ async def analyze_upload(file: UploadFile):
                        if k not in ("asset_id", "snapshot_date")},
                 })
             except Exception as exc:
+                print(f"UPLOAD ANALYZE ERROR: {type(exc).__name__}: {str(exc)}")
                 raise HTTPException(status_code=422, detail=str(exc))
 
         model_asset_type = criteria_config.get("asset_type", "unknown")
@@ -323,6 +325,7 @@ async def analyze_upload(file: UploadFile):
             prediction_mode=False,
         )
     except Exception as exc:
+        print(f"UPLOAD ANALYZE ERROR: {type(exc).__name__}: {str(exc)}")
         raise HTTPException(status_code=422, detail=str(exc))
 
     default_manual = {
@@ -346,6 +349,7 @@ async def analyze_upload(file: UploadFile):
                    if k not in ("asset_id", "snapshot_date")},
             })
         except Exception as exc:
+            print(f"UPLOAD ANALYZE ERROR: {type(exc).__name__}: {str(exc)}")
             raise HTTPException(status_code=422, detail=str(exc))
 
     try:
