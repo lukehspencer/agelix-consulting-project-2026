@@ -15,12 +15,9 @@ def model_path_for_asset_type(asset_type: str) -> str:
     return str(_MODELS_DIR / f"{sanitize_asset_type(asset_type)}.pkl")
 
 
-def list_models() -> list[dict]:
-    if not _MODELS_DIR.exists():
-        return []
-
+def _load_model_entries(paths) -> list[dict]:
     models = []
-    for path in sorted(_MODELS_DIR.glob("*.pkl")):
+    for path in paths:
         try:
             bundle = joblib.load(path)
         except Exception:
@@ -42,18 +39,38 @@ def list_models() -> list[dict]:
     return models
 
 
+def list_models() -> list[dict]:
+    if not _MODELS_DIR.exists():
+        return []
+
+    # RUL 2 (decommissioning) bundles live alongside RUL 1 bundles in the
+    # same directory but are trained with a different (age-inclusive)
+    # feature vector -- excluded here so find_model() never hands a RUL 2
+    # bundle to a RUL 1 prediction call, which would fail feature-length
+    # validation or silently score against a mismatched model.
+    paths = [p for p in sorted(_MODELS_DIR.glob("*.pkl")) if not p.name.endswith("_rul2.pkl")]
+    return _load_model_entries(paths)
+
+
+def list_rul2_models() -> list[dict]:
+    if not _MODELS_DIR.exists():
+        return []
+
+    paths = sorted(_MODELS_DIR.glob("*_rul2.pkl"))
+    return _load_model_entries(paths)
+
+
 def _tokenize(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-def find_model(asset_type: str) -> str | None:
-    """Finds the best matching pre-trained model for a given asset type.
+def _match_asset_type(models: list[dict], asset_type: str) -> str | None:
+    """Finds the best matching model for a given asset type among `models`.
 
     1. Exact match on asset_type (case-insensitive)
     2. Partial match -- most word overlap between the two asset_type strings
     3. None if nothing overlaps
     """
-    models = list_models()
     if not models:
         return None
 
@@ -76,6 +93,15 @@ def find_model(asset_type: str) -> str | None:
         return models[0]["model_path"]
 
     return None
+
+
+def find_model(asset_type: str) -> str | None:
+    return _match_asset_type(list_models(), asset_type)
+
+
+def find_rul2_model(asset_type: str) -> str | None:
+    """Same matching strategy as find_model(), scoped to *_rul2.pkl bundles."""
+    return _match_asset_type(list_rul2_models(), asset_type)
 
 
 def get_model_bundle(model_path: str) -> dict:

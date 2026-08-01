@@ -146,6 +146,23 @@ function pmDateColor(days) {
   return COLORS.healthy
 }
 
+// Shared by the Decomm. Year table column and the Lifecycle popup's Life
+// RUL card -- both key off the same years-until-decommissioning value
+// (asset.rul_2_years), just displayed differently (a calendar year vs. a
+// year count).
+function lifeRulColor(years) {
+  if (years == null) return COLORS.neutral
+  if (years < 5) return COLORS.critical
+  if (years <= 10) return COLORS.monitor
+  return COLORS.healthy
+}
+
+function lifeConsumedColorClass(pct) {
+  if (pct > 80) return 'dyn-red'
+  if (pct >= 60) return 'dyn-yellow'
+  return 'dyn-green'
+}
+
 function consensusBadge(consensus) {
   if (consensus === 'high') return { symbol: '✓', label: 'Models agree', color: COLORS.healthy }
   if (consensus === 'medium') return { symbol: '~', label: 'Similar', color: COLORS.monitor }
@@ -376,6 +393,7 @@ export default function DynamicAssetTable({
               <th className="th-score">Risk Factor</th>
               <th className="th-score">Breach Status</th>
               <th className="th-score">RUL Est. (days)</th>
+              <th className="th-score">Decomm. Year</th>
               <th className="th-score">PM Interval</th>
               <th className="th-score">Next PM Date</th>
               <th className="th-score">CI</th>
@@ -452,6 +470,13 @@ export default function DynamicAssetTable({
                         )}
                       </>
                     ) : '-'}
+                  </td>
+                  <td className="td-score">
+                    {asset.rul_2_available && asset.decommission_year != null ? (
+                      <span style={{ color: lifeRulColor(asset.rul_2_years), fontWeight: 'bold' }}>
+                        {asset.decommission_year}
+                      </span>
+                    ) : 'N/A'}
                   </td>
                   <td className="td-score">
                     {asset.mtbm?.mtbm_recommended_days != null ? (
@@ -542,6 +567,12 @@ export default function DynamicAssetTable({
               pmIntervalSource={criteriaConfig.pm_interval_source}
               pmIntervalConfidence={criteriaConfig.pm_interval_confidence}
             />
+
+            {/* Divider */}
+            <div className="explain-popup-divider" />
+
+            {/* Lifecycle (decommissioning RUL / RUL 2) */}
+            <Lifecycle asset={activeAsset} />
 
             {/* Divider */}
             <div className="explain-popup-divider" />
@@ -729,6 +760,62 @@ function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, 
           Next Recommended Maintenance: <strong>{mtbm.next_maintenance_date}</strong>
         </p>
       )}
+    </div>
+  )
+}
+
+const _DESIGN_LIFE_YEARS = 25
+
+function Lifecycle({ asset }) {
+  if (!asset) return null
+
+  if (!asset.rul_2_available) {
+    return (
+      <div className="maintenance-planning">
+        <h4 className="multi-sensor-title">Lifecycle</h4>
+        <p className="mp-card-note">
+          Life RUL model not available. Train with True_RUL_2_Years column to enable.
+        </p>
+      </div>
+    )
+  }
+
+  const rul2Years = asset.rul_2_years
+  const pctLifeRemaining = asset.pct_life_remaining ?? 0
+  const pctConsumed = Math.min(100, Math.max(0, 100 - pctLifeRemaining))
+
+  return (
+    <div className="maintenance-planning">
+      <h4 className="multi-sensor-title">Lifecycle</h4>
+
+      <div className="mp-cards">
+        <div className="mp-card">
+          <span className="mp-card-title">Life RUL</span>
+          <span className="mp-card-value" style={{ color: lifeRulColor(rul2Years) }}>
+            {rul2Years != null ? `${rul2Years} years` : '-'}
+          </span>
+          <span className="mp-card-sub">
+            Est. decommission: {asset.decommission_year ?? 'N/A'}
+          </span>
+        </div>
+
+        <div className="mp-card">
+          <span className="mp-card-title">Life Consumed</span>
+          <span className="mp-card-value">{pctConsumed.toFixed(0)}%</span>
+          <div className="stress-index-bar-track">
+            <div
+              className={`stress-index-bar-fill ${lifeConsumedColorClass(pctConsumed)}`}
+              style={{ width: `${pctConsumed}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="mp-card">
+          <span className="mp-card-title">Design Life</span>
+          <span className="mp-card-value">{_DESIGN_LIFE_YEARS} years</span>
+          <span className="mp-card-sub">ISO/OEM specification</span>
+        </div>
+      </div>
     </div>
   )
 }

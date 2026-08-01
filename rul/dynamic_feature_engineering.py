@@ -28,7 +28,17 @@ def _n_criteria(criteria_config: dict) -> int:
     return len(criteria_config.get("criteria", []))
 
 
-def get_dynamic_feature_names(criteria_config: dict) -> list[str]:
+def _find_pai_score(asset_snapshot: dict) -> float:
+    for key, val in asset_snapshot.items():
+        if "pai" in key.lower():
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def get_dynamic_feature_names(criteria_config: dict, use_age_features: bool = False) -> list[str]:
     n = _n_criteria(criteria_config)
 
     names = [
@@ -70,6 +80,10 @@ def get_dynamic_feature_names(criteria_config: dict) -> list[str]:
     names.append("medium_severity_count")
     names.append("max_exceeded_pct")
 
+    if use_age_features:
+        names.append("operating_hours")
+        names.append("pai_score")
+
     return names
 
 
@@ -77,12 +91,15 @@ def build_dynamic_feature_vector(asset_snapshot: dict,
                                   criteria_config: dict,
                                   weights: list,
                                   scores_raw: dict,
-                                  breaches: list = None) -> list:
+                                  breaches: list = None,
+                                  use_age_features: bool = False) -> list:
     # NOTE: total_runtime_hours intentionally excluded from feature
-    # vector. It is an absolute cumulative counter that varies by
-    # asset age and misleads prediction on assets with different
+    # vector by default. It is an absolute cumulative counter that varies
+    # by asset age and misleads prediction on assets with different
     # expected lifetimes than training data. Use rolling sensor
     # statistics and trend features instead for degradation state.
+    # use_age_features flips this for RUL 2 (decommissioning) models,
+    # where absolute age is directly relevant rather than misleading.
     n = _n_criteria(criteria_config)
     vector = []
 
@@ -162,5 +179,9 @@ def build_dynamic_feature_vector(asset_snapshot: dict,
     vector.append(_safe_float(high_count, "high_severity_count"))
     vector.append(_safe_float(medium_count, "medium_severity_count"))
     vector.append(_safe_float(max_pct, "max_exceeded_pct"))
+
+    if use_age_features:
+        vector.append(_safe_float(asset_snapshot.get("total_runtime_hours", 0), "operating_hours"))
+        vector.append(_safe_float(_find_pai_score(asset_snapshot), "pai_score"))
 
     return vector

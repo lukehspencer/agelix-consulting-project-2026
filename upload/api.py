@@ -15,6 +15,7 @@ from ahp.threshold_breach_detector import detect_breaches, get_breach_summary
 from rul.dynamic_train import train_dynamic_model
 from rul.dynamic_feature_engineering import build_dynamic_feature_vector
 from rul.dynamic_ml_rul_model import predict_adjusted_dynamic
+from rul.dynamic_ml_rul2_model import predict_rul2_adjusted
 from rul.rul_explainer import explain
 from rul.breach_explainer import explain_all_breaches
 from rul.mtbf_mtbm import calculate_mtbf, calculate_mtbm, calculate_replace_vs_maintain
@@ -528,6 +529,11 @@ def predict_all(body: PredictAllInput):
 
     prediction_mode = not schema_summary.get("has_rul_column", True)
 
+    # RUL 2 (decommissioning) is optional -- most asset types won't have a
+    # trained RUL 2 model yet. Resolved once per call since it only depends
+    # on the (call-wide) criteria config's asset type, not the per-asset snapshot.
+    rul2_model_path = model_registry.find_rul2_model(criteria_config.get("asset_type", ""))
+
     try:
         snapshots = aggregate_uploaded_data(
             file_path=body.file_path,
@@ -565,6 +571,26 @@ def predict_all(body: PredictAllInput):
             raise HTTPException(status_code=422, detail=str(exc))
 
         rul_months = round(prediction["rul_years"] * 12, 1)
+
+        # RUL 2 uses its own feature vector -- its bundle was trained with
+        # use_age_features=True (operating_hours + pai_score appended), so
+        # it is longer than the RUL 1 vector above and cannot be reused as-is.
+        # Additive and best-effort: any failure here must never block the
+        # RUL 1 result the rest of this endpoint already depends on.
+        rul2_result = None
+        if rul2_model_path:
+            try:
+                vec_rul2 = build_dynamic_feature_vector(
+                    snap, criteria_config, body.weights, raw_scores, breaches,
+                    use_age_features=True,
+                )
+                rul2_result = predict_rul2_adjusted(
+                    feature_vector=vec_rul2,
+                    risk_factor=risk_factor,
+                    model_path=rul2_model_path,
+                )
+            except (FileNotFoundError, ValueError):
+                rul2_result = None
 
         # Compare the same calibrated/adjusted RUL shown elsewhere in this
         # response (not the raw pre-calibration value) against the physics
@@ -631,6 +657,10 @@ def predict_all(body: PredictAllInput):
             "rul_ml_days": selection["ml_rul_days"],
             "rul_physics_days": selection["physics_rul_days"],
             "rul_reason": selection["reason"],
+            "rul_2_years": rul2_result["rul_2_years"] if rul2_result else None,
+            "decommission_year": rul2_result["decommission_year"] if rul2_result else None,
+            "pct_life_remaining": rul2_result["pct_life_remaining"] if rul2_result else None,
+            "rul_2_available": rul2_result is not None,
             **{k: v for k, v in snap.items()
                if k not in ("asset_id", "snapshot_date")},
         })

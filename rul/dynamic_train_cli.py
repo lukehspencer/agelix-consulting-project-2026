@@ -47,6 +47,23 @@ def main():
             "telemetry sheet. None was found."
         )
 
+    # A training file may carry both a RUL 1 (failure) target and a RUL 2
+    # (decommissioning) target -- e.g. True_RUL_Days alongside
+    # True_RUL_2_Years, trained separately by rul.dynamic_train_rul2_cli.
+    # data/upload_schema.py's generic RUL-keyword detector only recognizes
+    # and excludes one RUL-like column from sensor_columns (whichever it
+    # matches first); the other is left in as if it were an ordinary sensor.
+    # RUL 1 training must never see True_RUL_2_Years as a feature -- it
+    # would leak a different target's label into this model's inputs.
+    if "True_RUL_2_Years" in schema_summary.get("sensor_columns", []):
+        print("Dropping 'True_RUL_2_Years' from sensor columns -- RUL 1 "
+              "training targets True_RUL_Days only. Train the decommissioning "
+              "model separately with rul.dynamic_train_rul2_cli.")
+        schema_summary["sensor_columns"] = [
+            c for c in schema_summary["sensor_columns"] if c != "True_RUL_2_Years"
+        ]
+        schema_summary.get("sensor_stats", {}).pop("True_RUL_2_Years", None)
+
     if args.config:
         import json
         with open(args.config) as f:
