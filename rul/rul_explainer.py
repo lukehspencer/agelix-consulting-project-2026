@@ -299,7 +299,7 @@ DO NOT:
         client = anthropic.Anthropic()
         message = client.messages.create(
             model=_MODEL,
-            max_tokens=512,
+            max_tokens=1500,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
