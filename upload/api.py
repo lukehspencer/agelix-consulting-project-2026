@@ -100,6 +100,100 @@ def _build_correlation_summary(snap: dict, criteria_config: dict) -> dict:
     }
 
 
+def _sensor_warn_crit(criteria_config: dict) -> dict:
+    """Maps sensor column -> (warning, critical) numeric bounds, derived from
+    each non-manual criterion's `thresholds` list: the warning boundary is
+    the `max` of the last "safe" band (score <= 3, same convention as
+    ahp/threshold_breach_detector.py's safe/risk boundary), critical is the
+    `max` of the first band beyond it. Used to populate rul_explainer.py's
+    CURRENT SENSOR READINGS section with real per-sensor thresholds instead
+    of a bare value.
+    """
+    bounds = {}
+    for crit in (criteria_config or {}).get("criteria", []):
+        if crit.get("manual_input"):
+            continue
+        col = crit.get("primary_column")
+        thresholds = crit.get("thresholds", [])
+        if not col or not thresholds:
+            continue
+
+        safe_max = None
+        risk_max = None
+        for t in thresholds:
+            if "max" not in t:
+                continue
+            if t.get("score", 0) <= 3:
+                safe_max = t["max"]
+            elif risk_max is None:
+                risk_max = t["max"]
+
+        if safe_max is not None:
+            bounds[col] = (safe_max, risk_max if risk_max is not None else safe_max)
+
+    return bounds
+
+
+def _build_asset_context(body: "ExplainInput") -> dict:
+    """Assembles the rich, per-asset context rul_explainer.explain() needs
+    for a specific, data-driven assessment -- built from the full asset
+    result returned by POST /upload/predict-all (`body.pump`, expected to
+    include rul_days/rul_ml_days/rul_physics_days/consensus/breaches/mtbm
+    and the raw sensor/rolling-mean columns) plus the approved CriteriaConfig
+    the frontend sends alongside it.
+    """
+    pump = body.pump or {}
+    criteria_config = body.criteria_config or {}
+    criteria = criteria_config.get("criteria", [])
+
+    id_to_name = {c.get("id"): c.get("name", c.get("id")) for c in criteria}
+    raw_scores = pump.get("scores") or {}
+    criterion_scores = {id_to_name.get(cid, cid): score for cid, score in raw_scores.items()}
+
+    ordered_names = [id_to_name.get(c.get("id"), c.get("id")) for c in criteria]
+    if ordered_names and len(ordered_names) == len(body.weights):
+        criterion_weights = dict(zip(ordered_names, body.weights))
+    else:
+        criterion_weights = {f"C{i + 1}": w for i, w in enumerate(body.weights)}
+
+    sensor_readings = []
+    for col, (warn, crit) in _sensor_warn_crit(criteria_config).items():
+        value = pump.get(f"rolling_{col}_mean", pump.get(col))
+        if value is not None:
+            sensor_readings.append((col, value, warn, crit))
+
+    # CI is a fixed +-182 day band around the primary/selected rul_days --
+    # same convention as DynamicAssetTable.jsx's computeCiDays(), so the
+    # explanation never cites a different range than what's on screen.
+    rul_days = pump.get("rul_days")
+    ci_low_days = max(0, round(rul_days - 182)) if rul_days is not None else None
+    ci_high_days = round(rul_days + 182) if rul_days is not None else None
+
+    mtbm = pump.get("mtbm") or {}
+
+    return {
+        "asset_id": pump.get("asset_id", "unknown"),
+        "asset_type": body.asset_type,
+        "snapshot_date": pump.get("snapshot_date", "unknown"),
+        "days_since_last_event": pump.get("days_since_last_event", "unknown"),
+        "predicted_rul_days": rul_days,
+        "predicted_rul_years": (rul_days / 365) if rul_days is not None else None,
+        "primary_source": pump.get("rul_primary_source"),
+        "ml_rul_days": pump.get("rul_ml_days"),
+        "physics_rul_days": pump.get("rul_physics_days"),
+        "ci_low_days": ci_low_days,
+        "ci_high_days": ci_high_days,
+        "consensus": pump.get("consensus"),
+        "risk_factor": body.risk_factor,
+        "criterion_scores": criterion_scores,
+        "criterion_weights": criterion_weights,
+        "sensor_readings": sensor_readings,
+        "breaches": pump.get("breaches") or [],
+        "failure_modes": body.failure_modes or criteria_config.get("failure_modes") or [],
+        "next_pm_date": mtbm.get("next_maintenance_date"),
+    }
+
+
 def _validate_approved_criteria(criteria_config: dict, schema_summary: dict) -> None:
     criteria = criteria_config.get("criteria", [])
     if not (3 <= len(criteria) <= 7):
@@ -187,6 +281,7 @@ class ExplainInput(BaseModel):
     asset_type: str = "KSB Calio 30-40"
     failure_modes: list[str] = None
     sensor_context: dict = None
+    criteria_config: dict = None
 
     @field_validator("weights", "scores")
     @classmethod
@@ -457,16 +552,6 @@ def predict_all(body: PredictAllInput):
         breach_summary = get_breach_summary(breaches)
 
         mtbf_result = calculate_mtbf(snap, criteria_config)
-        mtbm_result = calculate_mtbm(
-            mtbf_days=mtbf_result["mtbf_days"],
-            risk_factor=risk_factor,
-            current_interval_days=current_interval_days,
-        )
-        replace_maintain = calculate_replace_vs_maintain(
-            mtbf_days=mtbf_result["mtbf_days"],
-            maintenance_cost_last_year=snap.get("maintenance_cost_last_year", 0),
-            asset_snapshot=snap,
-        )
 
         vec = build_dynamic_feature_vector(
             snap, criteria_config, body.weights, raw_scores, breaches,
@@ -501,6 +586,21 @@ def predict_all(body: PredictAllInput):
             physics_rul_days=physics_rul_days,
             consensus=consensus,
             physics_confidence=physics_confidence,
+        )
+
+        # PM interval is primarily driven by this asset's own predicted RUL
+        # (see rul/mtbf_mtbm.py) -- computed after select_rul() so it can use
+        # the primary/selected estimate, not the raw ML value.
+        mtbm_result = calculate_mtbm(
+            mtbf_days=mtbf_result["mtbf_days"],
+            risk_factor=risk_factor,
+            current_interval_days=current_interval_days,
+            rul_days=selection["primary_rul_days"],
+        )
+        replace_maintain = calculate_replace_vs_maintain(
+            mtbf_days=mtbf_result["mtbf_days"],
+            maintenance_cost_last_year=snap.get("maintenance_cost_last_year", 0),
+            asset_snapshot=snap,
         )
 
         results.append({
@@ -553,18 +653,11 @@ def explain_asset(body: ExplainInput):
         body.risk_factor,
     )
 
+    asset_context = _build_asset_context(body)
+
     try:
         text = explain(
-            pump=body.pump,
-            weights=body.weights,
-            scores=body.scores,
-            risk_factor=body.risk_factor,
-            predicted_rul=body.predicted_rul,
-            ci_low=body.ci_low,
-            ci_high=body.ci_high,
-            asset_type=body.asset_type,
-            failure_modes=body.failure_modes,
-            sensor_context=body.sensor_context,
+            asset_context=asset_context,
             retrieved_context=retrieved_context,
         )
     except RuntimeError as exc:

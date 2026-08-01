@@ -46,16 +46,58 @@ def calculate_mtbf(asset_snapshot: dict, criteria_config: dict) -> dict:
     }
 
 
-def calculate_mtbm(mtbf_days: float, risk_factor: float,
-                    current_interval_days: int = 90) -> dict:
+def calculate_mtbm(mtbf_days: float | None, risk_factor: float,
+                    current_interval_days: int = 90,
+                    rul_days: float | None = None) -> dict:
+    if rul_days is not None and rul_days > 0:
+        # Primary method: RUL-based. Schedules maintenance at 75% of this
+        # asset's own predicted remaining life, leaving a 25% buffer before
+        # it's expected to reach a critical state. This reacts to the asset's
+        # actual predicted trajectory rather than population-level failure
+        # statistics (MTBF) or current risk score alone, so it takes priority
+        # over both fallbacks below whenever a RUL prediction is available.
+        mtbm_recommended = max(1, round(rul_days * 0.75))
+
+        if mtbm_recommended < current_interval_days * 0.8:
+            recommendation = "shorten"
+            recommendation_text = (
+                f"Reduce PM interval to {mtbm_recommended} days based on predicted RUL of "
+                f"{rul_days:.0f} days. Maintenance scheduled at 75% of remaining life."
+            )
+        elif mtbm_recommended > current_interval_days * 1.2:
+            recommendation = "extend"
+            recommendation_text = (
+                f"PM interval can be extended to {mtbm_recommended} days based on predicted "
+                f"RUL of {rul_days:.0f} days."
+            )
+        else:
+            recommendation = "maintain"
+            recommendation_text = (
+                f"Current interval is appropriate. Recommended PM in {mtbm_recommended} days "
+                f"based on predicted RUL of {rul_days:.0f} days."
+            )
+
+        next_maintenance_date = (date.today() + timedelta(days=mtbm_recommended)).isoformat()
+
+        return {
+            "mtbm_recommended_days": mtbm_recommended,
+            "current_interval_days": current_interval_days,
+            "recommendation": recommendation,
+            "recommendation_text": recommendation_text,
+            "next_maintenance_date": next_maintenance_date,
+            "basis": "rul_based",
+            "rul_days_used": rul_days,
+        }
+
     if mtbf_days is None:
-        # No failure history to derive an MTBF-based interval from. Fall back
-        # to a risk-adjusted interval instead of just "maintain current" --
-        # higher current risk (from the AHP criteria, not failure history)
-        # shortens the interval, up to a 50% reduction at max risk. This is
-        # a materially different, weaker basis than MTBF-derived recommendations
-        # below (asset condition/criticality, not observed failure frequency),
-        # so "basis" is always set here and callers/UI should treat it as such.
+        # No RUL prediction and no failure history to derive an MTBF-based
+        # interval from. Fall back to a risk-adjusted interval instead of
+        # just "maintain current" -- higher current risk (from the AHP
+        # criteria, not failure history) shortens the interval, up to a 50%
+        # reduction at max risk. This is a materially weaker basis than
+        # either method above (asset condition/criticality, not a predicted
+        # trajectory or observed failure frequency), so "basis" is always
+        # set here and callers/UI should treat it as such.
         risk_ratio = (risk_factor - 1) / 8
         adjustment = 1 - (risk_ratio * 0.5)
         mtbm_recommended = round(current_interval_days * adjustment)
@@ -82,6 +124,7 @@ def calculate_mtbm(mtbf_days: float, risk_factor: float,
             "recommendation_text": recommendation_text,
             "next_maintenance_date": next_maintenance_date,
             "basis": "risk_adjusted",
+            "rul_days_used": None,
         }
 
     base_mtbm = mtbf_days * 0.6
@@ -114,6 +157,7 @@ def calculate_mtbm(mtbf_days: float, risk_factor: float,
         "recommendation_text": recommendation_text,
         "next_maintenance_date": next_maintenance_date,
         "basis": "mtbf_based",
+        "rul_days_used": None,
     }
 
 

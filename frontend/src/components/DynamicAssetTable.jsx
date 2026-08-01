@@ -166,6 +166,16 @@ function decisionBadge(decision) {
   return { label: 'Insufficient Data', className: 'mp-decision-grey' }
 }
 
+function mtbmBasisText(mtbm) {
+  if (mtbm?.basis === 'rul_based') {
+    const days = mtbm.rul_days_used != null ? Math.round(mtbm.rul_days_used) : '?'
+    return `Calculated from predicted RUL (${days} days × 75%)`
+  }
+  if (mtbm?.basis === 'mtbf_based') return 'Calculated from historical MTBF'
+  if (mtbm?.basis === 'risk_adjusted') return 'Adjusted from current interval based on risk level'
+  return null
+}
+
 function confidenceClass(confidence) {
   if (confidence === 'high') return 'mp-confidence-high'
   if (confidence === 'medium') return 'mp-confidence-medium'
@@ -667,6 +677,9 @@ function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, 
             {mtbm?.mtbm_recommended_days != null ? `${mtbm.mtbm_recommended_days} days` : 'Insufficient data'}
           </span>
           <span className="mp-card-sub">Optimal interval based on asset risk and degradation rate</span>
+          {mtbmBasisText(mtbm) && (
+            <span className="mp-card-sub">{mtbmBasisText(mtbm)}</span>
+          )}
           {(pmIntervalSource || pmIntervalConfidence) && (
             <span className="mp-card-sub">
               Based on: {pmIntervalSource ?? 'default'} ({pmIntervalConfidence ?? 'low'} confidence)

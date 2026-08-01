@@ -37,6 +37,15 @@ def _make_mock_response(text):
     return resp
 
 
+def _explain():
+    # Legacy default-fleet call shape (keyword args, no asset_context) --
+    # rul/api.py (frozen) calls explain() this way.
+    return explain(
+        pump=SAMPLE_PUMP, weights=WEIGHTS, scores=SCORES, risk_factor=RISK_FACTOR,
+        predicted_rul=PREDICTED_RUL, ci_low=CI_LOW, ci_high=CI_HIGH,
+    )
+
+
 class TestExplain:
     @mock.patch("rul.rul_explainer.anthropic.Anthropic")
     def test_returns_non_empty_string(self, mock_cls):
@@ -44,7 +53,7 @@ class TestExplain:
         mock_client.messages.create.return_value = _make_mock_response(
             "  This pump has a low RUL due to bearing wear.  "
         )
-        result = explain(SAMPLE_PUMP, WEIGHTS, SCORES, RISK_FACTOR, PREDICTED_RUL, CI_LOW, CI_HIGH)
+        result = _explain()
         assert isinstance(result, str)
         assert len(result) > 0
         assert result == "This pump has a low RUL due to bearing wear."
@@ -54,13 +63,13 @@ class TestExplain:
         mock_client = mock_cls.return_value
         mock_client.messages.create.side_effect = Exception("connection timeout")
         with pytest.raises(RuntimeError, match="Anthropic API call failed.*connection timeout"):
-            explain(SAMPLE_PUMP, WEIGHTS, SCORES, RISK_FACTOR, PREDICTED_RUL, CI_LOW, CI_HIGH)
+            _explain()
 
     @mock.patch("rul.rul_explainer.anthropic.Anthropic")
     def test_prompt_contains_asset_id(self, mock_cls):
         mock_client = mock_cls.return_value
         mock_client.messages.create.return_value = _make_mock_response("Explanation.")
-        explain(SAMPLE_PUMP, WEIGHTS, SCORES, RISK_FACTOR, PREDICTED_RUL, CI_LOW, CI_HIGH)
+        _explain()
         prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
         assert "KSB-CALIO-3040-1000" in prompt
 
@@ -68,7 +77,7 @@ class TestExplain:
     def test_prompt_contains_predicted_rul(self, mock_cls):
         mock_client = mock_cls.return_value
         mock_client.messages.create.return_value = _make_mock_response("Explanation.")
-        explain(SAMPLE_PUMP, WEIGHTS, SCORES, RISK_FACTOR, PREDICTED_RUL, CI_LOW, CI_HIGH)
+        _explain()
         prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
         assert str(PREDICTED_RUL) in prompt
 
@@ -76,7 +85,7 @@ class TestExplain:
     def test_prompt_contains_risk_factor(self, mock_cls):
         mock_client = mock_cls.return_value
         mock_client.messages.create.return_value = _make_mock_response("Explanation.")
-        explain(SAMPLE_PUMP, WEIGHTS, SCORES, RISK_FACTOR, PREDICTED_RUL, CI_LOW, CI_HIGH)
+        _explain()
         prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
         assert str(RISK_FACTOR) in prompt
 
@@ -84,7 +93,7 @@ class TestExplain:
     def test_prompt_contains_failure_modes(self, mock_cls):
         mock_client = mock_cls.return_value
         mock_client.messages.create.return_value = _make_mock_response("Explanation.")
-        explain(SAMPLE_PUMP, WEIGHTS, SCORES, RISK_FACTOR, PREDICTED_RUL, CI_LOW, CI_HIGH)
+        _explain()
         prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
         assert "Bearings" in prompt
         assert "Electronics" in prompt
@@ -94,7 +103,7 @@ class TestExplain:
     def test_prompt_contains_telemetry_indicators(self, mock_cls):
         mock_client = mock_cls.return_value
         mock_client.messages.create.return_value = _make_mock_response("Explanation.")
-        explain(SAMPLE_PUMP, WEIGHTS, SCORES, RISK_FACTOR, PREDICTED_RUL, CI_LOW, CI_HIGH)
+        _explain()
         prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
         assert "0.81" in prompt
         assert "48.7" in prompt
@@ -104,5 +113,5 @@ class TestExplain:
     def test_uses_correct_model(self, mock_cls):
         mock_client = mock_cls.return_value
         mock_client.messages.create.return_value = _make_mock_response("Explanation.")
-        explain(SAMPLE_PUMP, WEIGHTS, SCORES, RISK_FACTOR, PREDICTED_RUL, CI_LOW, CI_HIGH)
+        _explain()
         assert mock_client.messages.create.call_args.kwargs["model"] == "claude-sonnet-4-6"

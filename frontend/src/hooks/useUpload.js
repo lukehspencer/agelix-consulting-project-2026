@@ -248,6 +248,7 @@ export default function useUpload() {
       asset_type: activeCriteriaConfig.asset_type ?? 'Unknown Asset',
       failure_modes: activeCriteriaConfig.failure_modes ?? [],
       sensor_context: sensorContext,
+      criteria_config: activeCriteriaConfig,
     }
 
     try {
