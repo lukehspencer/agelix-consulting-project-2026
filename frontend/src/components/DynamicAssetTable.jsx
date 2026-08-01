@@ -204,6 +204,29 @@ export default function DynamicAssetTable({
   const [loadingBreachId, setLoadingBreachId] = useState(null)
   const breachPopupRef = useRef(null)
 
+  // While either popup is open: Escape closes it, and the body can't scroll
+  // behind the modal. Runs before the early-return below so hook order stays
+  // stable across renders regardless of whether assets/criteriaConfig exist.
+  useEffect(() => {
+    if (activeId == null && activeBreachId == null) return undefined
+
+    function handleKeyDown(e) {
+      if (e.key === 'Escape') {
+        setActiveId(null)
+        setActiveBreachId(null)
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [activeId, activeBreachId])
+
   console.log('[DynamicAssetTable] render: assets.length =', assets?.length ?? 0)
 
   if (!assets || !assets.length || !criteriaConfig) return null
