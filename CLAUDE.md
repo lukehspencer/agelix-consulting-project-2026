@@ -1140,7 +1140,7 @@ Returns `{"primary_rul_days", "primary_source": "ml"|"physics"|"average", "ml_ru
 
 ## GenAI Explainability
 
-Model: claude-sonnet-4-6. API key: `ANTHROPIC_API_KEY` from `.env` via python-dotenv.
+Model: claude-sonnet-4-6, `max_tokens=1500` (raised from an earlier `512` -- the 5-sentence structured assessment described below needs more headroom than the old free-form 3-4 sentence version). API key: `ANTHROPIC_API_KEY` from `.env` via python-dotenv.
 
 ```python
 def explain(asset_context: dict = None, retrieved_context: dict = None, *,
@@ -1432,6 +1432,8 @@ When breach alerts requested:
 | RULExplanation | RULExplanation.jsx | No (orphaned) | Claude explanation cards per pump (default fleet) |
 
 "Orphaned" components/hooks are kept on disk deliberately (never delete component or hook files) -- they are simply not imported by `Dashboard.jsx` anymore. The default fleet's backend endpoints they used to call remain fully functional for direct API use.
+
+**Explain/Breach Alerts popup modal behavior:** both popups (`.explain-backdrop`/`.explain-popup` in `index.css`) are `position: fixed`, centered on screen (`top: 50%; left: 50%; transform: translate(-50%, -50%)`), sized `width: min(700px, 90vw)` so they never exceed the viewport horizontally. The popup itself is the scroll container (`max-height: 70vh; overflow-y: auto`) rather than growing past the viewport and trapping the user, with `.explain-popup-header` (asset ID + close button) set to `position: sticky; top: 0` with a white background so it stays visible while the body content scrolls underneath it. A `useEffect` in `DynamicAssetTable.jsx` (declared before the component's early `return null`, so hook order stays stable across renders) runs whenever either popup is open (`activeId` or `activeBreachId` non-null): it listens for `Escape` on `keydown` (closing both), and sets `document.body.style.overflow = 'hidden'` -- restoring whatever value was there before on cleanup -- so the page behind the modal can't scroll while it's open. Clicking the semi-transparent `.explain-backdrop` overlay outside the popup also closes it (`handleBackdropClick`/`handleBreachBackdropClick`, comparing the click target against `popupRef`/`breachPopupRef`); this predates the scroll/sticky-header fix and was unaffected by it.
 
 ### Hook Inventory
 
