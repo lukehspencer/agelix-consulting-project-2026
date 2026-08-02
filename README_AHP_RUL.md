@@ -237,7 +237,7 @@ Both feed the RUL model as additional features and surface in the dashboard: a M
 For uploaded assets, every scoring pass also computes three simplified, deterministic approximations (no API calls, and explicitly not full Weibull statistical reliability models):
 
 - **Estimated MTBF** (mean time between failures) -- derived from the asset's observed failure count and total runtime, with a confidence label (low/medium/high) based on how many failures were actually observed. With zero recorded failures, MTBF is deliberately shown as unavailable (`N/A*`) rather than a fabricated estimate -- there's no data to estimate from. MTBF is popup-only ("Historical MTBF" card); it doesn't have its own column in the risk ranking table.
-- **Recommended maintenance interval (MTBM)** -- picks its calculation basis in priority order. Whenever a RUL prediction is available (the normal case, once a model is trained and approved), the interval is scheduled at **75% of this specific asset's own predicted remaining life** -- a 25% buffer before the asset is expected to reach a critical state, using the same primary/selected RUL estimate shown as the headline RUL number everywhere else in the dashboard (see Degradation Projection and Model Selection), not the raw ML value. If no RUL prediction is available, MTBM falls back to a risk-adjusted fraction of MTBF when MTBF is available, or a **risk-only adjustment** of the current interval when neither is available -- higher AHP risk shortens it (up to 50% at maximum risk), capped at recommending "shorten" or "maintain" (never "extend," since there's no failure data or RUL prediction to justify lengthening it). Either way, the recommendation is compared against the asset's **approved PM interval** (the SME-approved value if one was set during criteria review, else Claude's recommendation from schema inference, else a 90-day fallback) to recommend shortening, extending, or maintaining it, plus a suggested next maintenance date. The table shows this as two columns: **PM Interval** (the recommended days, red if shortening is recommended, green otherwise) and **Next PM Date** (color-coded by how soon it falls -- red within 30 days, yellow within 90, green beyond); the popup's "Recommended MTBM" card additionally names which basis produced the number ("Calculated from predicted RUL," "Calculated from historical MTBF," or "Adjusted from current interval based on risk level").
+- **Recommended maintenance interval (MTBM)** -- picks its calculation basis in priority order. Highest priority: when a monitored sensor is trending toward its own **warning** threshold with high or medium confidence (a degradation projection distinct from the RUL failure projection above -- it fires at an earlier, more conservative crossing point), the interval is scheduled at the day that sensor is projected to cross that threshold -- an asset-specific estimate driven by this asset's own observed degradation rate, capped so it never recommends maintenance later than the asset's own predicted RUL. If that sensor has *already* crossed its warning threshold (or the asset's RUL is already exhausted), the recommendation is immediate: a 0-day interval, an "Overdue" badge, and next maintenance date of today rather than tomorrow. If no degradation projection is available, falls back to the same 75%-of-RUL calculation as before (**75% of this specific asset's own predicted remaining life**, using the same primary/selected RUL estimate shown as the headline RUL number everywhere else -- see Degradation Projection and Model Selection, not the raw ML value); if no RUL prediction is available either, falls back further to a risk-adjusted fraction of MTBF when MTBF is available, or a **risk-only adjustment** of the current interval when neither is available -- higher AHP risk shortens it (up to 50% at maximum risk), capped at recommending "shorten" or "maintain" (never "extend," since there's no failure data or RUL prediction to justify lengthening it). Except for the immediate/overdue case, the recommendation is compared against the asset's **approved PM interval** (the SME-approved value if one was set during criteria review, else Claude's recommendation from schema inference, else a 90-day fallback) to recommend shortening, extending, or maintaining it, plus a suggested next maintenance date. The table shows this as two columns: **PM Interval** (the recommended days, red if shortening or overdue, green otherwise, or the literal word "Immediate" instead of "0 d" when overdue) and **Next PM Date** (color-coded by how soon it falls -- red within 30 days, yellow within 90, green beyond); the popup's "Recommended MTBM" card additionally names which basis produced the number ("Based on sensor degradation rate," "Scheduled at 75% of predicted RUL," "Based on historical MTBF data," or "Adjusted from current interval based on risk level").
 - **Replace vs. maintain** -- a basic amortized-cost comparison between ongoing maintenance spend and an estimated (or uploaded) replacement cost.
 
 These appear in the dashboard as a "Maintenance Planning" section of the asset explanation popup ("Historical MTBF" and "Recommended MTBM" cards plus economic decision, and a highlighted next-maintenance date) and as the PM Interval / Next PM Date columns in the risk ranking table.
@@ -253,6 +253,8 @@ The "assets require attention" banner at the top of the table is two-tiered: red
 On demand, the dashboard calls the Anthropic API to generate an exact 5-sentence, data-driven maintenance assessment for each asset: current condition (risk factor plus the single most concerning sensor reading), root cause analysis (the highest-scoring criterion and the physical failure mode it points to), breach details (each breached sensor's exact value, threshold, and severity -- or which sensors are trending toward their thresholds if none are breached), RUL interpretation (predicted days, which model produced the estimate and why, and what the confidence interval means), and a specific action tied to an actual date rather than a vague timeframe. The prompt is built entirely from real numbers -- AHP criterion scores and weights by name, per-sensor warning/critical thresholds derived from the approved CriteriaConfig, and the model-selected primary RUL alongside the individual ML and physics estimates -- and explicitly instructed to avoid generic phrasing ("it is recommended"), vague timeframes ("soon"), and repetition. Responses are generated with `max_tokens=1500` (raised from an earlier `512` to give the fuller 5-sentence structure enough room). For uploaded assets, the explanation adapts to the inferred asset type and failure modes, and is enriched with retrieved failure precedents and maintenance guidance from the RAG knowledge base when available. The default fleet's `/rul/explain` endpoint uses the same explainer with a smaller set of fields (no breach or physics-projection data is available there), so its assessments are correspondingly less detailed but still follow the same 5-sentence structure.
 
 The explanation (and breach alert) popup is a scrollable modal, not a fixed-height panel that can grow past the screen: it caps at 70% of the viewport height with its own internal scrollbar, keeps the asset ID and close button pinned to the top as you scroll, and can be dismissed with the Escape key or by clicking outside it, with the page behind it locked from scrolling while it's open.
+
+Both the explanation text and each breach alert are rendered through formatting logic rather than dropped in as a raw string: `**bold**` markdown becomes real emphasis, and if Claude includes bracketed section labels the text is split into headed blocks; plain prose (the normal case) falls back to paragraphs split on blank lines.
 
 ### RAG Knowledge Pipeline
 
@@ -489,17 +491,24 @@ before pushing — otherwise Railway will keep serving the old build.
 
 ### Dockerfile
 
-A `Dockerfile` also exists at the project root, running the same 
-pipeline as Railway's build command as a sequence of Docker layers. 
-Railway itself does not currently build from it — `railway.toml` pins 
-`builder = "nixpacks"` — it's available for building the image 
-directly elsewhere (`docker build .`). Unlike the Railway build, its 
-dynamic-model-training step passes `--config rul/ksb_criteria_config.json` 
-to `rul/dynamic_train_cli.py`, which skips the Claude API call for that 
-step entirely (see Training vs. Prediction Mode) — so `docker build` 
-does not need `ANTHROPIC_API_KEY` to complete. The running container 
-still needs the key at runtime for normal schema inference and 
-explanation requests, passed via `docker run -e ANTHROPIC_API_KEY=...`.
+A `Dockerfile` also exists at the project root. Railway itself does 
+not currently build from it — `railway.toml` pins `builder = "nixpacks"` 
+— it's available for building the image directly elsewhere 
+(`docker build .`). Unlike the Railway build command, it trains 
+**nothing** at build time: it only installs dependencies and runs 
+`COPY . .`, which brings in every pre-trained model artifact already 
+committed to git (`rul/model.pkl` for the default fleet, plus every 
+`rul/models/<asset_type>.pkl` / `<asset_type>_rul2.pkl` bundle). Since 
+the pre-trained models are committed to the repo and copied straight 
+into the container, Railway (or any Docker-based deploy) doesn't need 
+to retrain them, and `docker build` doesn't need `ANTHROPIC_API_KEY` 
+at all as a result. The running container still needs the key at 
+**runtime** for normal schema inference and explanation requests, 
+passed via `docker run -e ANTHROPIC_API_KEY=...`. If a model needs 
+retraining (e.g. after changing the training data or feature 
+engineering), run `rul.train` / `rul.dynamic_train_cli` / 
+`rul.dynamic_train_rul2_cli` locally and commit the resulting `.pkl` 
+files rather than expecting the Docker build to regenerate them.
 
 ### Redeploying after changes
 git push origin main
