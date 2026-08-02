@@ -134,6 +134,7 @@ function formatShortDate(dateStr) {
 }
 
 function pmIntervalColor(recommendation) {
+  if (recommendation === 'immediate') return COLORS.critical
   if (recommendation === 'shorten') return COLORS.critical
   if (recommendation === 'maintain' || recommendation === 'extend') return COLORS.healthy
   return COLORS.neutral
@@ -171,6 +172,7 @@ function consensusBadge(consensus) {
 }
 
 function mtbmBadge(recommendation) {
+  if (recommendation === 'immediate') return { label: 'Overdue', color: COLORS.critical }
   if (recommendation === 'shorten') return { label: 'Shorten ↓', color: COLORS.critical }
   if (recommendation === 'extend') return { label: 'Extend ↑', color: COLORS.monitor }
   if (recommendation === 'maintain') return { label: 'On Track ✓', color: COLORS.healthy }
@@ -191,26 +193,16 @@ function decisionBadge(decision) {
 function pmBasisDetailLines(mtbm, pmProjection) {
   const basis = mtbm?.basis
 
-  if (basis === 'degradation_projection') {
-    const limitingSensor = pmProjection?.limiting_sensor
-    const detail = limitingSensor ? pmProjection?.sensor_pm_projections?.[limitingSensor] : null
-    if (!limitingSensor || !detail) return null
-    const threshold = detail.warning_threshold ?? pmProjection?.limiting_threshold ?? 0
-    const currentValue = detail.current_value ?? 0
-    const trendRate = detail.trend_rate ?? 0
-    return [
-      `Based on ${formatSensorName(limitingSensor)} degradation rate`,
-      `Warning threshold: ${threshold.toFixed(2)}`,
-      `Current value: ${currentValue.toFixed(3)}`,
-      `Trend: +${trendRate.toFixed(4)}/day`,
-    ]
+  if (basis === 'degradation_projection' || basis === 'physics') {
+    return ['Based on sensor degradation rate']
   }
   if (basis === 'rul_based') {
     const days = mtbm.rul_days_used != null ? Math.round(mtbm.rul_days_used) : '?'
     return [`Scheduled at 75% of predicted RUL (${days} days)`]
   }
-  if (basis === 'mtbf_based') return ['Calculated from historical MTBF']
   if (basis === 'risk_adjusted') return ['Adjusted from current interval based on risk level']
+  if (basis === 'domain_knowledge' || basis === 'mtbf_based') return ['Based on historical MTBF data']
+  if (basis === 'no_trend_detected') return ['No clear degradation trend -- using RUL estimate']
   return null
 }
 
@@ -502,7 +494,7 @@ export default function DynamicAssetTable({
                   <td className="td-score">
                     {asset.mtbm?.mtbm_recommended_days != null ? (
                       <span className="mtbm-arrow" style={{ color: pmIntervalColor(asset.mtbm.recommendation) }}>
-                        {asset.mtbm.mtbm_recommended_days} d
+                        {asset.mtbm.mtbm_recommended_days === 0 ? 'Immediate' : `${asset.mtbm.mtbm_recommended_days} d`}
                       </span>
                     ) : 'N/A'}
                   </td>

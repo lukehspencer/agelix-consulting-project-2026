@@ -52,13 +52,35 @@ def calculate_mtbm(mtbf_days: float | None, risk_factor: float,
                     pm_projection: dict | None = None) -> dict:
     if (pm_projection and pm_projection.get("pm_days") is not None
             and pm_projection.get("confidence") in ("high", "medium")):
+        pm_days = pm_projection["pm_days"]
+
+        # Already at or past the warning threshold, or the asset's own
+        # predicted RUL is already exhausted -- there's no future interval
+        # to recommend, maintenance is due now. next_maintenance_date must
+        # be today, not today + 1 (rounding pm_days up to a 1-day floor, as
+        # the general case below does, would otherwise push this into the
+        # future for an asset that needs attention right now).
+        if pm_days <= 0 or (rul_days is not None and rul_days <= 0):
+            return {
+                "mtbm_recommended_days": 0,
+                "current_interval_days": current_interval_days,
+                "recommendation": "immediate",
+                "recommendation_text": (
+                    "Asset has reached or exceeded warning threshold -- "
+                    "maintenance required immediately."
+                ),
+                "next_maintenance_date": date.today().isoformat(),
+                "basis": "degradation_projection",
+                "rul_days_used": rul_days,
+            }
+
         # Highest-priority method when available: degradation-projection-based.
         # Schedules maintenance at the earliest point any monitored sensor is
         # projected to cross its own WARNING threshold (see
         # rul/physics_rul.py's project_asset_pm()) -- an asset-specific
         # estimate driven by this asset's own observed degradation rate,
         # rather than a fixed percentage of RUL or population-level MTBF.
-        mtbm_recommended = max(1, round(pm_projection["pm_days"]))
+        mtbm_recommended = max(1, round(pm_days))
 
         # A PM schedule must never fall after this asset's own predicted
         # RUL -- recommending maintenance beyond an asset's expected
