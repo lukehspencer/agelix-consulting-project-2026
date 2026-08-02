@@ -7,7 +7,7 @@ from datetime import timedelta
 import pandas as pd
 
 from data.column_resolver import resolve, is_failure_event
-from rul.physics_rul import project_asset_rul
+from rul.physics_rul import project_asset_pm, project_asset_rul
 
 _TREND_WINDOW = 14
 
@@ -215,6 +215,18 @@ def aggregate_uploaded_data(file_path: str,
             sensor_columns=sensor_cols,
         )
 
+        # Asset-specific PM projection, driven by each sensor's own warning-
+        # threshold crossing rather than a fixed percentage of RUL -- see
+        # rul/mtbf_mtbm.py's calculate_mtbm(), which prioritizes this basis
+        # when available. Same never-raises guarantee as physics_projection.
+        pm_projection = project_asset_pm(
+            telemetry_df=asset_tel.iloc[:snapshot_idx + 1],
+            criteria_config=criteria_config,
+            asset_id=str(asset_id),
+            date_column=date_col,
+            sensor_columns=sensor_cols,
+        )
+
         snapshot_out = {
             "asset_id": str(asset_id),
             "snapshot_date": str(snapshot_date.date()) if hasattr(snapshot_date, 'date') else str(snapshot_date),
@@ -244,6 +256,7 @@ def aggregate_uploaded_data(file_path: str,
 
         snapshot_out.update(correlation_features)
         snapshot_out["physics_projection"] = physics_projection
+        snapshot_out["pm_projection"] = pm_projection
 
         failures_90 = 0
         days_since = 999

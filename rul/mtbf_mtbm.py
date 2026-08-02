@@ -48,7 +48,57 @@ def calculate_mtbf(asset_snapshot: dict, criteria_config: dict) -> dict:
 
 def calculate_mtbm(mtbf_days: float | None, risk_factor: float,
                     current_interval_days: int = 90,
-                    rul_days: float | None = None) -> dict:
+                    rul_days: float | None = None,
+                    pm_projection: dict | None = None) -> dict:
+    if (pm_projection and pm_projection.get("pm_days") is not None
+            and pm_projection.get("confidence") in ("high", "medium")):
+        # Highest-priority method when available: degradation-projection-based.
+        # Schedules maintenance at the earliest point any monitored sensor is
+        # projected to cross its own WARNING threshold (see
+        # rul/physics_rul.py's project_asset_pm()) -- an asset-specific
+        # estimate driven by this asset's own observed degradation rate,
+        # rather than a fixed percentage of RUL or population-level MTBF.
+        mtbm_recommended = max(1, round(pm_projection["pm_days"]))
+
+        # A PM schedule must never fall after this asset's own predicted
+        # RUL -- recommending maintenance beyond an asset's expected
+        # remaining life is never useful, regardless of which basis produced
+        # the number. (The rul_based branch below can never exceed rul_days
+        # by construction, since it's always 75% of it -- this cap only ever
+        # bites here, when the degradation projection runs ahead of RUL.)
+        if rul_days is not None and rul_days > 0 and mtbm_recommended > rul_days:
+            mtbm_recommended = max(1, round(rul_days * 0.9))
+
+        limiting_sensor = pm_projection.get("limiting_sensor")
+        limiting_threshold = pm_projection.get("limiting_threshold") or 0.0
+        sensor_detail = (pm_projection.get("sensor_pm_projections") or {}).get(limiting_sensor) or {}
+        trend_rate = sensor_detail.get("trend_rate") or 0.0
+
+        recommendation_text = (
+            f"PM in {mtbm_recommended} days based on {limiting_sensor} trending toward "
+            f"warning threshold of {limiting_threshold:.2f} at current degradation rate "
+            f"of {trend_rate:.4f}/day"
+        )
+
+        if mtbm_recommended < current_interval_days * 0.8:
+            recommendation = "shorten"
+        elif mtbm_recommended > current_interval_days * 1.2:
+            recommendation = "extend"
+        else:
+            recommendation = "maintain"
+
+        next_maintenance_date = (date.today() + timedelta(days=mtbm_recommended)).isoformat()
+
+        return {
+            "mtbm_recommended_days": mtbm_recommended,
+            "current_interval_days": current_interval_days,
+            "recommendation": recommendation,
+            "recommendation_text": recommendation_text,
+            "next_maintenance_date": next_maintenance_date,
+            "basis": "degradation_projection",
+            "rul_days_used": rul_days,
+        }
+
     if rul_days is not None and rul_days > 0:
         # Primary method: RUL-based. Schedules maintenance at 75% of this
         # asset's own predicted remaining life, leaving a 25% buffer before

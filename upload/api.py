@@ -622,6 +622,7 @@ def predict_all(body: PredictAllInput):
             risk_factor=risk_factor,
             current_interval_days=current_interval_days,
             rul_days=selection["primary_rul_days"],
+            pm_projection=snap.get("pm_projection"),
         )
         replace_maintain = calculate_replace_vs_maintain(
             mtbf_days=mtbf_result["mtbf_days"],
@@ -661,6 +662,7 @@ def predict_all(body: PredictAllInput):
             "decommission_year": rul2_result["decommission_year"] if rul2_result else None,
             "pct_life_remaining": rul2_result["pct_life_remaining"] if rul2_result else None,
             "rul_2_available": rul2_result is not None,
+            "pm_projection": snap.get("pm_projection"),
             **{k: v for k, v in snap.items()
                if k not in ("asset_id", "snapshot_date")},
         })

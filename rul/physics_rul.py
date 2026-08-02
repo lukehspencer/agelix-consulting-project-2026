@@ -393,6 +393,144 @@ def _project_asset_rul_impl(telemetry_df,
     }
 
 
+def project_asset_pm(telemetry_df,
+                      criteria_config: dict,
+                      asset_id: str,
+                      date_column: str,
+                      sensor_columns: list) -> dict:
+    """
+    Projects when each monitored sensor will cross its WARNING threshold
+    (not critical) and returns the earliest crossing as the recommended
+    PM date -- an asset-specific estimate driven by this asset's own
+    observed degradation rate, rather than a fixed percentage of RUL or
+    population-level MTBF.
+
+    Warning threshold = the second-to-last "max" value in a criterion's
+    thresholds list (one band before the worst/catch-all band), i.e. an
+    earlier, more conservative crossing point than project_asset_rul()'s
+    critical-threshold-based failure projection (which uses the highest
+    "max" value). Reuses project_sensor_rul() per sensor, just against
+    this lower threshold.
+
+    Returns:
+        {
+            "pm_days": float or None,
+            "limiting_sensor": str or None,
+            "limiting_threshold": float or None,
+            "sensor_pm_projections": {
+                "<sensor>": {"days_to_warning", "warning_threshold",
+                             "current_value", "trend_rate"}
+            },
+            "confidence": "high" | "medium" | "low",
+            "basis": "degradation_projection" | "warning_already_breached" | "no_trend_detected"
+        }
+    """
+    try:
+        return _project_asset_pm_impl(
+            telemetry_df, criteria_config, asset_id, date_column, sensor_columns,
+        )
+    except Exception:
+        logger.exception(
+            "PM projection failed for asset '%s' -- returning empty projection", asset_id,
+        )
+        return {
+            "pm_days": None,
+            "limiting_sensor": None,
+            "limiting_threshold": None,
+            "sensor_pm_projections": {},
+            "confidence": "low",
+            "basis": "no_trend_detected",
+        }
+
+
+def _project_asset_pm_impl(telemetry_df,
+                            criteria_config: dict,
+                            asset_id: str,
+                            date_column: str,
+                            sensor_columns: list) -> dict:
+    sensor_warnings = {}
+    for criterion in criteria_config.get("criteria", []):
+        if criterion.get("manual_input"):
+            continue
+        primary_col = criterion.get("primary_column")
+        if not primary_col or primary_col not in sensor_columns:
+            continue
+        thresholds = criterion.get("thresholds", [])
+        max_values = [t["max"] for t in thresholds if "max" in t]
+        if len(max_values) >= 2:
+            warning_threshold = max_values[-2]
+        elif len(max_values) == 1:
+            warning_threshold = max_values[0]
+        else:
+            continue
+        sensor_warnings[primary_col] = warning_threshold
+
+    empty_result = {
+        "pm_days": None,
+        "limiting_sensor": None,
+        "limiting_threshold": None,
+        "sensor_pm_projections": {},
+        "confidence": "low",
+        "basis": "no_trend_detected",
+    }
+
+    if not sensor_warnings:
+        return empty_result
+
+    sensor_pm_projections = {}
+    fit_qualities = []
+    min_days = None
+    limiting_sensor = None
+
+    for sensor_col, warning_threshold in sensor_warnings.items():
+        if sensor_col not in telemetry_df.columns:
+            continue
+        values = telemetry_df[sensor_col].dropna().tolist()
+        if len(values) < 3:
+            continue
+
+        result = project_sensor_rul(values, warning_threshold, sensor_col)
+        sensor_pm_projections[sensor_col] = {
+            "days_to_warning": result.get("days_to_threshold"),
+            "warning_threshold": warning_threshold,
+            "current_value": result.get("current_value"),
+            "trend_rate": result.get("trend_rate"),
+        }
+        if result.get("fit_quality", 0) > 0:
+            fit_qualities.append(result["fit_quality"])
+
+        days = result.get("days_to_threshold")
+        if days is not None:
+            if min_days is None or days < min_days:
+                min_days = days
+                limiting_sensor = sensor_col
+
+    if limiting_sensor is None:
+        empty_result["sensor_pm_projections"] = sensor_pm_projections
+        return empty_result
+
+    n_rows = len(telemetry_df)
+    avg_fit_quality = float(np.mean(fit_qualities)) if fit_qualities else 0.0
+
+    if n_rows >= 60 and avg_fit_quality > 0.7:
+        confidence = "high"
+    elif n_rows >= 30 and avg_fit_quality > 0.4:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    basis = "warning_already_breached" if min_days == 0 else "degradation_projection"
+
+    return {
+        "pm_days": min_days,
+        "limiting_sensor": limiting_sensor,
+        "limiting_threshold": sensor_warnings[limiting_sensor],
+        "sensor_pm_projections": sensor_pm_projections,
+        "confidence": confidence,
+        "basis": basis,
+    }
+
+
 def assess_consensus(ml_rul_days: float,
                      physics_rul_days: float | None) -> str:
     """

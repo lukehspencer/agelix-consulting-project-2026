@@ -183,13 +183,34 @@ function decisionBadge(decision) {
   return { label: 'Insufficient Data', className: 'mp-decision-grey' }
 }
 
-function mtbmBasisText(mtbm) {
-  if (mtbm?.basis === 'rul_based') {
-    const days = mtbm.rul_days_used != null ? Math.round(mtbm.rul_days_used) : '?'
-    return `Calculated from predicted RUL (${days} days × 75%)`
+// PM Interval card basis breakdown, one entry per basis. For
+// "degradation_projection" this pulls the limiting sensor's detail from
+// pm_projection (rul/physics_rul.py's project_asset_pm()) rather than mtbm
+// alone, since mtbm only carries the already-composed recommendation_text,
+// not the individual threshold/value/trend numbers.
+function pmBasisDetailLines(mtbm, pmProjection) {
+  const basis = mtbm?.basis
+
+  if (basis === 'degradation_projection') {
+    const limitingSensor = pmProjection?.limiting_sensor
+    const detail = limitingSensor ? pmProjection?.sensor_pm_projections?.[limitingSensor] : null
+    if (!limitingSensor || !detail) return null
+    const threshold = detail.warning_threshold ?? pmProjection?.limiting_threshold ?? 0
+    const currentValue = detail.current_value ?? 0
+    const trendRate = detail.trend_rate ?? 0
+    return [
+      `Based on ${formatSensorName(limitingSensor)} degradation rate`,
+      `Warning threshold: ${threshold.toFixed(2)}`,
+      `Current value: ${currentValue.toFixed(3)}`,
+      `Trend: +${trendRate.toFixed(4)}/day`,
+    ]
   }
-  if (mtbm?.basis === 'mtbf_based') return 'Calculated from historical MTBF'
-  if (mtbm?.basis === 'risk_adjusted') return 'Adjusted from current interval based on risk level'
+  if (basis === 'rul_based') {
+    const days = mtbm.rul_days_used != null ? Math.round(mtbm.rul_days_used) : '?'
+    return [`Scheduled at 75% of predicted RUL (${days} days)`]
+  }
+  if (basis === 'mtbf_based') return ['Calculated from historical MTBF']
+  if (basis === 'risk_adjusted') return ['Adjusted from current interval based on risk level']
   return null
 }
 
@@ -566,6 +587,7 @@ export default function DynamicAssetTable({
               replaceVsMaintain={activeAsset.replace_vs_maintain}
               pmIntervalSource={criteriaConfig.pm_interval_source}
               pmIntervalConfidence={criteriaConfig.pm_interval_confidence}
+              pmProjection={activeAsset.pm_projection}
             />
 
             {/* Divider */}
@@ -700,11 +722,12 @@ function MultiSensorAnalysis({ correlationSummary }) {
   )
 }
 
-function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, pmIntervalConfidence }) {
+function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, pmIntervalConfidence, pmProjection }) {
   if (!mtbf && !mtbm && !replaceVsMaintain) return null
 
   const badge = mtbmBadge(mtbm?.recommendation)
   const decision = decisionBadge(replaceVsMaintain?.decision)
+  const basisLines = pmBasisDetailLines(mtbm, pmProjection)
 
   return (
     <div className="maintenance-planning">
@@ -731,9 +754,9 @@ function MaintenancePlanning({ mtbf, mtbm, replaceVsMaintain, pmIntervalSource, 
             {mtbm?.mtbm_recommended_days != null ? `${mtbm.mtbm_recommended_days} days` : 'Insufficient data'}
           </span>
           <span className="mp-card-sub">Optimal interval based on asset risk and degradation rate</span>
-          {mtbmBasisText(mtbm) && (
-            <span className="mp-card-sub">{mtbmBasisText(mtbm)}</span>
-          )}
+          {basisLines && basisLines.map((line, idx) => (
+            <span key={idx} className="mp-card-sub">{line}</span>
+          ))}
           {(pmIntervalSource || pmIntervalConfidence) && (
             <span className="mp-card-sub">
               Based on: {pmIntervalSource ?? 'default'} ({pmIntervalConfidence ?? 'low'} confidence)
