@@ -1835,6 +1835,10 @@ body {
   padding: 12px 18px;
 }
 
+.physics-projection {
+  padding: 12px 18px;
+}
+
 .mp-cards {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

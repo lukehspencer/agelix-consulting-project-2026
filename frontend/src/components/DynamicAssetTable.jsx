@@ -84,6 +84,70 @@ function pairDescription(pair) {
   return `${formatSensorName(pair.col_a)} x ${formatSensorName(pair.col_b)}: ${strength}${relation}`
 }
 
+// Bolds **text** markdown emphasis within a plain string, returning an
+// array of strings and <strong> elements suitable as React children.
+function formatBoldSegments(text, keyPrefix) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((segment, idx) => {
+    if (segment.startsWith('**') && segment.endsWith('**') && segment.length > 4) {
+      return <strong key={`${keyPrefix}-b${idx}`}>{segment.slice(2, -2)}</strong>
+    }
+    return segment
+  })
+}
+
+const EXPLANATION_SECTION_HEADER_STYLE = {
+  fontWeight: 'bold',
+  color: '#1e40af',
+  marginTop: '12px',
+  marginBottom: '4px',
+  fontSize: '13px',
+  textTransform: 'uppercase',
+  letterSpacing: '0.05em',
+}
+
+// Renders Claude-generated explanation/breach-alert text as styled React
+// elements instead of a raw string: [SECTION MARKER] headers (if present)
+// become labeled blocks, **bold** markdown becomes real emphasis, and
+// plain prose without any markers falls back to paragraphs split on blank
+// lines. Used wherever explanation text is displayed in this component.
+function renderExplanation(text) {
+  if (!text) return null
+
+  const markerRe = /\[([A-Z][A-Z \-]*)\]/g
+  const matches = [...text.matchAll(markerRe)]
+
+  if (matches.length === 0) {
+    return text
+      .split(/\n{2,}/)
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map((paragraph, idx) => (
+        <p key={`p-${idx}`} className="explain-popup-text" style={{ margin: idx === 0 ? 0 : '8px 0 0' }}>
+          {formatBoldSegments(paragraph, `p${idx}`)}
+        </p>
+      ))
+  }
+
+  const blocks = []
+  const leading = text.slice(0, matches[0].index).trim()
+  if (leading) blocks.push({ header: null, content: leading })
+
+  matches.forEach((m, i) => {
+    const start = m.index + m[0].length
+    const end = i + 1 < matches.length ? matches[i + 1].index : text.length
+    blocks.push({ header: m[1].trim(), content: text.slice(start, end).trim() })
+  })
+
+  return blocks.map((block, idx) => (
+    <div key={`s-${idx}`} style={{ marginBottom: '8px' }}>
+      {block.header && <div style={EXPLANATION_SECTION_HEADER_STYLE}>{block.header}</div>}
+      <p className="explain-popup-text" style={{ margin: 0 }}>
+        {formatBoldSegments(block.content, `s${idx}`)}
+      </p>
+    </div>
+  ))
+}
+
 function breachStatus(asset) {
   const summary = asset.breach_summary
   const count = summary?.total_breaches ?? 0
@@ -609,7 +673,7 @@ export default function DynamicAssetTable({
               {!isLoading && activeExplanation && (
                 activeExplanation.startsWith('Error:')
                   ? <p className="explanation-error">{activeExplanation}</p>
-                  : <p className="explain-popup-text">{activeExplanation}</p>
+                  : <div>{renderExplanation(activeExplanation)}</div>
               )}
             </div>
           </div>
@@ -660,7 +724,7 @@ export default function DynamicAssetTable({
                           Current: {breach.current_value} | Limit: {breach.threshold_max} | {(breach.exceeded_pct * 100).toFixed(0)}% over
                         </p>
                       )}
-                      <p className="explain-popup-text">{alert.alert_text}</p>
+                      <div>{renderExplanation(alert.alert_text)}</div>
                       {idx < activeBreachAlerts.length - 1 && <div className="explain-popup-divider" />}
                     </div>
                   )
