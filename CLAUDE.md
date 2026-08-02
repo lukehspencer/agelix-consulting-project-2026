@@ -67,6 +67,10 @@ Upload Mode:
   -> dynamic_feature_engineering.py (feature vector: rolling + correlation + breach features)
   -> dynamic_ml_rul_model.py (RUL -- POST /upload/predict-all requires criteria to have been
      approved at least once; weight-only re-runs reuse the approved config without re-approving)
+  -> dynamic_ml_rul2_model.py (RUL 2 / decommissioning -- optional and additive: only runs when
+     model_registry.find_rul2_model(asset_type) resolves a <asset_type>_rul2.pkl bundle; builds
+     its own use_age_features=True feature vector (see ML RUL Pipeline > RUL 2), and any failure
+     here is caught and degrades to rul_2_available=False rather than blocking the RUL 1 result)
   -> retriever.py (RAG: failure precedents, maintenance guidance)
   -> rul_explainer.py (Claude explanation with retrieved_context + correlation_summary)
   -> breach_explainer.py (on-demand Claude alert for high/medium severity breaches only)
@@ -80,6 +84,24 @@ Offline Training (rul/dynamic_train_cli.py -- the only way to train a model from
   -> schema_inferrer.py -> dynamic_train.py -> rul/models/<asset_type>.pkl via model_registry.py
   -> never invoked from the API or frontend; the user-facing upload flow only ever predicts
      against models this script (or a training-mode /upload/analyze call) already produced
+
+Offline RUL 2 / Decommissioning Training (rul/dynamic_train_rul2_cli.py -- separate script,
+separate model, never invoked from the API or frontend):
+  python -m rul.dynamic_train_rul2_cli --file <historical_data.xlsx> [--config <config.json>]
+  -> upload_schema.py (require_rul_column=False -- RUL 1's own detected column, if any, is
+     tracked only so it can be excluded as a candidate; a file may carry both a RUL 1 and a
+     RUL 2 target column at once, e.g. True_RUL_Days alongside True_RUL_2_Years)
+  -> _detect_rul2_column() finds the decommissioning target independently: checks
+     "rul_2"/"decommission"/"eol" keywords across all columns first (specific enough to never
+     collide with a RUL 1 column), then falls back to the same generic "rul"/"remaining"/
+     "life"/"ttf" keywords excluding whichever column schema_summary already claimed as rul_column
+  -> schema_inferrer.py (same as RUL 1, or --config to load a pre-built CriteriaConfig)
+  -> dynamic_feature_engineering.py (use_age_features=True -- appends real operating_hours +
+     pai_score to the vector; the opposite of RUL 1, which permanently excludes
+     total_runtime_hours -- see ML RUL Pipeline > RUL 2)
+  -> rul/models/<sanitized_asset_type>_rul2.pkl via model_registry.sanitize_asset_type()
+  -> POST /upload/predict-all looks this up via model_registry.find_rul2_model() and degrades
+     gracefully (rul_2_available=False) if none exists for the current asset type
 
 RAG Knowledge Pipeline:
   docs/manuals/ (PDF manuals)
@@ -147,13 +169,28 @@ agelix-consulting-project-2026/
 |   +-- dynamic_model.pkl                  # legacy single-model path -- fallback default only, no
 |   |                                      # longer where training-mode /upload/analyze saves to
 |   +-- dynamic_train_cli.py               # standalone CLI: python -m rul.dynamic_train_cli --file <path>
-|   |                                      # the only way to train a model from scratch; never
-|   |                                      # called from the API or frontend
+|   |                                      # the only way to train a RUL 1 model from scratch; never
+|   |                                      # called from the API or frontend; drops True_RUL_2_Years
+|   |                                      # from sensor_columns if present (see Key Design Constraints)
+|   +-- dynamic_ml_rul2_model.py           # predict_rul2() / predict_rul2_adjusted() for RUL 2 bundles
+|   +-- dynamic_train_rul2_cli.py          # standalone CLI: python -m rul.dynamic_train_rul2_cli --file <path>
+|   |                                      # trains the decommissioning (RUL 2) model; never called
+|   |                                      # from the API or frontend -- see ML RUL Pipeline > RUL 2
 |   +-- model_registry.py                  # list_models() / find_model() / get_model_bundle() /
-|   |                                      # model_path_for_asset_type() over rul/models/
-|   +-- models/                            # one <sanitized_asset_type>.pkl per trained asset type
-|   |                                      # (written by dynamic_train_cli.py and by training-mode
-|   |                                      # /upload/analyze)
+|   |                                      # model_path_for_asset_type() over rul/models/, plus
+|   |                                      # list_rul2_models() / find_rul2_model() scoped to
+|   |                                      # *_rul2.pkl -- each pair excludes the other's bundles
+|   +-- models/                            # one <sanitized_asset_type>.pkl per trained RUL 1 model,
+|   |                                      # one <sanitized_asset_type>_rul2.pkl per trained RUL 2
+|   |                                      # model (written by dynamic_train_cli.py /
+|   |                                      # dynamic_train_rul2_cli.py and by training-mode
+|   |                                      # /upload/analyze for RUL 1)
+|   +-- ceo_criteria_config.json           # pre-built CriteriaConfig for --config-based offline
+|   |                                      # training (skips Claude inference) -- see
+|   |                                      # dynamic_train_cli.py / dynamic_train_rul2_cli.py
+|   +-- ksb_criteria_config.json           # earlier pre-built config, superseded by
+|   |                                      # ceo_criteria_config.json -- kept on disk, no longer
+|   |                                      # referenced by any current script
 |
 +-- data/
 |   +-- raw/
@@ -161,6 +198,13 @@ agelix-consulting-project-2026/
 |   |   |   +-- KSB_Calio_Predictive_Maintenance_Complete.xlsx   # 1095 days x 5 pumps
 |   |   +-- maintenance/
 |   |   |   +-- maintenance_log.xlsx
+|   |   +-- training/
+|   |   |   +-- CEO_Schema_100_Pumps_Training_v2.xlsx   # 100 pumps; carries both True_RUL_Days
+|   |   |                                              # (RUL 1) and True_RUL_2_Years (RUL 2)
+|   |   |                                              # target columns -- used for manual/offline
+|   |   |                                              # dynamic_train_cli.py /
+|   |   |                                              # dynamic_train_rul2_cli.py runs, not
+|   |   |                                              # referenced by any automated build step
 |   |   +-- uploads/
 |   |       +-- (user-uploaded files land here)
 |   +-- telemetry_aggregator.py            # FROZEN -- sole data source for default fleet
@@ -359,7 +403,9 @@ Dashboard layout (top to bottom):
 1.  AHPMatrix (rendered once a criteria config -- draft or approved -- exists; labels from CriteriaConfig, not hardcoded)
 2.  UploadPanel (file drop + Review & Approve Criteria screen + predict button, gated on approval)
 3.  KnowledgeBasePanel (collapsible; manuals/failure cases/criteria configs + Approval Audit Log)
-4.  DynamicAssetTable (risk ranking + single RUL Est. column + MTBF/MTBM columns + breach status + inline explanations)
+4.  DynamicAssetTable (risk ranking + single RUL Est. column + Decomm. Year column (RUL 2, optional
+    per asset type) + MTBF/MTBM columns + breach status + inline explanations, incl. a popup
+    Lifecycle section for RUL 2)
 
 ---
 
@@ -680,12 +726,16 @@ Manages the collection of pre-trained models in `rul/models/`.
 ```python
 list_models() -> list[dict]     # [{"asset_type", "filename", "model_path", "trained_at", "feature_count"}]
 find_model(asset_type: str) -> str | None
+list_rul2_models() -> list[dict]              # same shape, scoped to *_rul2.pkl bundles only
+find_rul2_model(asset_type: str) -> str | None
 get_model_bundle(model_path: str) -> dict     # raises FileNotFoundError with a CLI hint if missing
 sanitize_asset_type(asset_type: str) -> str   # asset_type.lower().replace(" ", "_").replace("/", "_")
 model_path_for_asset_type(asset_type: str) -> str   # rul/models/<sanitize_asset_type(asset_type)>.pkl
 ```
 
-`find_model()` matching strategy, in order: (1) exact case-insensitive match on `asset_type`; (2) partial match -- the model bundle with the most word-overlap against the query `asset_type` (tokenized on `[a-z0-9]+`), as long as at least one word overlaps; (3) `None` if nothing overlaps at all. `list_models()` returns `[]` if `rul/models/` doesn't exist yet, and silently skips any `.pkl` that fails to `joblib.load()` (e.g. corrupted or mid-write) rather than raising.
+`find_model()`/`find_rul2_model()` share one matching strategy (`_match_asset_type()`), in order: (1) exact case-insensitive match on `asset_type`; (2) partial match -- the model bundle with the most word-overlap against the query `asset_type` (tokenized on `[a-z0-9]+`), as long as at least one word overlaps; (3) `None` if nothing overlaps at all. `list_models()` returns `[]` if `rul/models/` doesn't exist yet, and silently skips any `.pkl` that fails to `joblib.load()` (e.g. corrupted or mid-write) rather than raising.
+
+`list_models()` globs `*.pkl` but **excludes** any file ending in `_rul2.pkl`; `list_rul2_models()` does the reverse (`*_rul2.pkl` only). Without this exclusion, `find_model()` (used for RUL 1 lookups) could match a RUL 2 bundle as if it were a RUL 1 candidate -- since RUL 2 bundles are trained with a different, longer feature vector (`use_age_features=True`, see ML RUL Pipeline > RUL 2), that would raise a feature-length `ValueError` at prediction time, or worse, silently score against the wrong model if the lengths ever happened to coincide.
 
 ### rul/dynamic_train_cli.py
 
@@ -701,6 +751,23 @@ Runs `validate_upload(file_path, require_rul_column=True)` (hard error if no RUL
 - **`--config <path>` given:** skips Claude inference entirely and loads the CriteriaConfig straight from that JSON file (`json.load()`), printing `"Using pre-built config from {path}"`. No Anthropic API call happens for this step -- useful for build/CI environments (see Deployment > Dockerfile) that shouldn't depend on network access or an API key just to reproduce a previously-approved config. The loaded config is **not** re-validated against `schema_summary` the way `/upload/analyze`'s Claude output is -- in particular, a config saved from a *prediction-mode* run has `column_roles.rul_target = None` (forced there by design), and `dynamic_train.train_dynamic_model()` reads the RUL column from `criteria_config["column_roles"]["rul_target"]`, not from the freshly-detected `schema_summary["rul_column"]` -- so pointing `--config` at a prediction-mode-derived JSON will fail training with `RUL target column 'None' not found in dataset`, even though the training file itself has a real RUL column. Only point `--config` at a config whose `rul_target` is a real, populated column name.
 
 Either way, calls `dynamic_train.train_dynamic_model()` with `model_output_path=model_registry.model_path_for_asset_type(asset_type)`. Prints asset type, train/test sample counts, train/test RMSE (years), and the saved model path. The resulting bundle starts with `bundle["approved"] = False` exactly like a training-mode `/upload/analyze` bundle -- it still needs to go through `POST /upload/approve-criteria` (triggered from the dashboard's review screen during a later prediction-mode upload) before `POST /upload/predict-all` will accept it via the normal approval gate.
+
+**RUL 2 column exclusion:** a training file may carry both a RUL 1 (failure) target and a RUL 2 (decommissioning) target -- e.g. `True_RUL_Days` alongside `True_RUL_2_Years`, the latter trained separately by `rul/dynamic_train_rul2_cli.py`. `data/upload_schema.py`'s generic RUL-keyword detector only recognizes and excludes one RUL-like column from `sensor_columns` (whichever it matches first); the other is otherwise left in as if it were an ordinary sensor. Right after the `has_rul_column` check, `dynamic_train_cli.py` explicitly checks for `"True_RUL_2_Years"` in `schema_summary["sensor_columns"]` and drops it (from both `sensor_columns` and `sensor_stats`) before criteria resolution or training -- RUL 1 training must never see the RUL 2 label as a feature, which would leak a different target's answer into this model's inputs. Verified against the real `CEO_Schema_100_Pumps_Training_v2.xlsx` file: with the guard in place, the retrained RUL 1 model bundle is byte-identical to one trained on a file that never had a `True_RUL_2_Years` column at all.
+
+### rul/dynamic_train_rul2_cli.py
+
+Standalone script -- the only way to train a RUL 2 (decommissioning) model from scratch. Never imported or called by the API or frontend. Mirrors `dynamic_train_cli.py`'s structure (own training loop, not a call into `dynamic_train.py`) but targets a different label and feature shape.
+
+```
+python -m rul.dynamic_train_rul2_cli --file <path_to_excel>
+python -m rul.dynamic_train_rul2_cli --file <path_to_excel> --config <path_to_criteria_config.json>
+```
+
+Runs `validate_upload(file_path, require_rul_column=False)` -- RUL 1's own detection is irrelevant here, so a missing RUL 1 column is not an error. `_detect_rul2_column()` finds the decommissioning target independently of whatever `schema_summary["rul_column"]` (RUL 1) resolved to: checks `"rul_2"`/`"decommission"`/`"eol"` keywords across **all** columns first (specific enough to never collide with a RUL 1 column, so this pass never excludes anything), then falls back to the same generic `"rul"`/`"remaining"`/`"life"`/`"ttf"` keywords as RUL 1, this time excluding whichever column RUL 1 already claimed. Raises with a clear message (naming the RUL 1 column found, if any) if nothing matches either pass.
+
+`--config` behaves exactly as in `dynamic_train_cli.py` (skip Claude inference, load a pre-built CriteriaConfig JSON). The training loop excludes **both** the RUL 1 and RUL 2 columns from its own `sensor_cols` (defensive, in case either ended up in `schema_summary["sensor_columns"]`), and calls `build_dynamic_feature_vector(..., use_age_features=True)` (see ML RUL Pipeline > RUL 2) so the model is trained on the same feature shape `dynamic_ml_rul2_model.py` expects at inference time. The label is used as-is -- `True_RUL_2_Years` (or whatever column was detected) is already expressed in years, unlike RUL 1's `True_RUL_Days`, so there is no `/365` conversion.
+
+Saves to `rul/models/<sanitized_asset_type>_rul2.pkl` via `model_registry.sanitize_asset_type()` (not `model_path_for_asset_type()`, which is RUL-1-specific). Prints train/test RMSE (years), top-10 feature importances, and the observed RUL 2 label range. The bundle carries `"rul_type": "decommission"`, `"rul_target_column"`, `"use_age_features": True`, and `"max_train_rul_years"` (this model's own training range, unrelated to the RUL 1 bundle's value of the same key) alongside the usual `model`/`feature_names`/`criteria_config`/`schema_summary`/`approved` fields. Verified against real training data: `pai_score` and `operating_hours` land in the top-3 feature importances, confirming the age-aware feature vector is actually being used.
 
 ### column_resolver.py
 
@@ -1136,6 +1203,37 @@ Returns `{"primary_rul_days", "primary_source": "ml"|"physics"|"average", "ml_ru
 
 `upload/api.py`'s `POST /upload/predict-all` calls `select_rul()` per asset (after `assess_consensus()`) and attaches `rul_days` (the primary estimate -- this is what `DynamicAssetTable.jsx` treats as *the* RUL number everywhere: sorting, Health Status, summary counts, both banners), `rul_primary_source`, `rul_ml_days`, `rul_physics_days`, `rul_reason`, and `physics_confidence` to each result (see FastAPI Endpoints).
 
+### RUL 2 (Decommissioning) Pipeline
+
+A second, entirely independent XGBoost model answers a different question than RUL 1: not "how long until this asset fails," but "how long until this asset should be decommissioned." It is optional per asset type -- most uploads have no RUL 2 model, and `POST /upload/predict-all` must keep working identically whether or not one exists.
+
+**Training data and label:** any file with a decommissioning-RUL-like column (`True_RUL_2_Years` or similar, detected by `rul/dynamic_train_rul2_cli.py`'s `_detect_rul2_column()` -- see Upload Pipeline). The label is used directly in years, no `/365` conversion (unlike RUL 1's `True_RUL_Days`).
+
+**Feature vector -- `use_age_features` (`rul/dynamic_feature_engineering.py`):** both `get_dynamic_feature_names()` and `build_dynamic_feature_vector()` accept an optional `use_age_features: bool = False` parameter. When `True`, two features are appended to the **end** of the otherwise-identical RUL 1 vector (same append-only convention as every other feature added to this vector -- see Key Design Constraints):
+```
+operating_hours   # the real total_runtime_hours value, not zeroed or excluded
+pai_score         # found by scanning the snapshot for any key containing "pai" (case-insensitive,
+                  # e.g. "PAI_Score" -- Physical Age Index), 0.0 if no such key exists
+```
+This is the deliberate opposite of RUL 1's permanent exclusion of `total_runtime_hours`: for a failure-RUL model, absolute age misleads predictions across assets with different expected lifetimes; for a decommissioning-RUL model, absolute age *is* the signal. Default `False` keeps the RUL 1 vector shape (and every existing trained RUL 1 bundle) completely unchanged. Confirmed against real training data: `rolling_PAI_Score_mean`, `pai_score`, and `operating_hours` are the top-3 feature importances for the trained RUL 2 model.
+
+**Prediction (`rul/dynamic_ml_rul2_model.py`):**
+```python
+predict_rul2(feature_vector: list, model_path: str) -> dict
+predict_rul2_adjusted(feature_vector: list, risk_factor: float, model_path: str) -> dict
+```
+Both validate feature vector length against the bundle's `feature_names` (`ValueError` on mismatch) and raise `FileNotFoundError` with a `dynamic_train_rul2_cli.py` hint if the model file is missing. Return shape:
+```json
+{"rul_2_years": 8.3, "decommission_year": 2034, "ci_low_years": 6.3, "ci_high_years": 10.3, "pct_life_remaining": 33.2}
+```
+`rul_2_years` is rounded to 1 decimal. `decommission_year` is the current calendar year plus the rounded `rul_2_years`. `ci_low_years`/`ci_high_years` are a fixed ±2 year band (not a statistically derived interval, same spirit as RUL 1's fixed ±182-day band). `pct_life_remaining` is `rul_2_years / design_life * 100`. `design_life` is read as `bundle.get("design_life", 25)` -- defaults to the KSB Calio 25-year spec but stays bundle-overridable per asset type, unlike the RUL 1 calibration anchor (`max_train_rul_years`), which is always training-derived and never a hardcoded constant (see Key Design Constraints) -- design life has no equivalent "observed in training data" source, so a sane default is the only option here.
+
+`predict_rul2_adjusted()` applies a **dampened** AHP risk adjustment: `rul_2_adjusted = rul_2_years * (1 - R_asset * 0.3)` where `R_asset = (risk_factor - 1) / 8` -- a `0.3` multiplier, not RUL 1's full `1.0`, because decommissioning timelines are driven mostly by absolute age, not current sensor/risk state; a risk spike should nudge the estimate, not swing it the way it does for operational (failure) RUL.
+
+**Integration (`upload/api.py`'s `POST /upload/predict-all`):** resolves `rul2_model_path = model_registry.find_rul2_model(criteria_config["asset_type"])` once per call (not per-asset, since asset type is call-wide). Per asset, if a model was found, builds a **separate** feature vector via `build_dynamic_feature_vector(..., use_age_features=True)` -- it cannot reuse RUL 1's `vec`, which is shorter -- and calls `predict_rul2_adjusted()`. The whole block is wrapped in `try/except (FileNotFoundError, ValueError)`: any RUL 2 failure sets `rul2_result = None` and never raises, so it can never block the RUL 1 result the rest of the endpoint already depends on. Adds to each asset result: `rul_2_years`, `decommission_year`, `pct_life_remaining` (all `None` when no model exists or prediction failed), and `rul_2_available` (`bool`).
+
+**Frontend (`DynamicAssetTable.jsx`):** a **Decomm. Year** table column after RUL Est., showing `decommission_year` or `N/A`, colored via a shared `lifeRulColor(years)` helper (red `< 5` years remaining, yellow `5-10`, green `> 10`) keyed off `asset.rul_2_years`. The explain popup gets a **Lifecycle** section (below Maintenance Planning, above Degradation Projection) with three cards -- **Life RUL** (`{rul_2_years} years`, colored via the same `lifeRulColor()`, sub-line "Est. decommission: {decommission_year}"), **Life Consumed** (`{100 - pct_life_remaining}%` with a progress bar, red `> 80%`/yellow `60-80%`/green `< 60%`), and **Design Life** (static `"25 years"`, sub-line "ISO/OEM specification") -- or, when `rul_2_available` is `false`, a single line: "Life RUL model not available. Train with True_RUL_2_Years column to enable."
+
 ---
 
 ## GenAI Explainability
@@ -1278,6 +1376,8 @@ POST /upload/predict-all body:
 
 Each returned asset includes `correlation_summary` (`composite_stress_index`, `top_correlated_pairs`, `sensors_degrading_together`), `breaches` (list), `breach_summary` (counts + `alert_required`), `mtbf`/`mtbm`/`replace_vs_maintain` (see Upload Pipeline > Maintenance Planning and PM Interval Inference and Approval), `rul_raw_days`/`rul_calibrated` (see ML RUL Pipeline > RUL Prediction Calibration), `physics_projection` (see ML RUL Pipeline > Physics-Based Degradation Projection -- spread in from the snapshot dict, includes `consensus_with_ml` once computed), and the model-selection fields from `rul/consensus_rul.py`'s `select_rul()` (see ML RUL Pipeline > Model Selection Between ML and Physics): `consensus`, `physics_confidence`, `rul_days` (**the primary/selected RUL in days -- this is what the frontend treats as the headline RUL number everywhere**, not `rul_years * 365`), `rul_primary_source` (`"ml"` | `"physics"` | `"average"`), `rul_ml_days`, `rul_physics_days`, `rul_reason`.
 
+Also included, from the optional RUL 2 (decommissioning) pipeline (see ML RUL Pipeline > RUL 2): `rul_2_years`, `decommission_year`, `pct_life_remaining` (all `null` when no `<asset_type>_rul2.pkl` model exists, or on any RUL 2 prediction failure), and `rul_2_available` (`bool`) -- the frontend gates the Decomm. Year column and Lifecycle popup section on this flag.
+
 POST /upload/explain body:
 ```json
 {"pump": {}, "weights": [], "scores": [], "risk_factor": 5.2,
@@ -1347,7 +1447,8 @@ predictedAssets:         []     // includes correlation_summary, breaches, breac
                                  // mtbf, mtbm, replace_vs_maintain, rul_raw_days, rul_calibrated,
                                  // physics_projection, consensus, physics_confidence, rul_days
                                  // (the primary/selected RUL), rul_primary_source, rul_ml_days,
-                                 // rul_physics_days, rul_reason per asset
+                                 // rul_physics_days, rul_reason, rul_2_years, decommission_year,
+                                 // pct_life_remaining, rul_2_available per asset
 uploadedExplanations:    {}     // keyed by asset_id
 uploadedBreachAlerts:    {}     // keyed by asset_id, from /upload/explain-breach
 uploadedAhpResult:       null   // { weights, cr, valid } from AHPMatrix's onWeightsUpdate
@@ -1407,11 +1508,12 @@ When breach alerts requested:
    Run/Re-run Analysis + Edit Criteria buttons, gated on approval)
 3. KnowledgeBasePanel (collapsible; manuals/failure cases/criteria configs + Approval Audit Log)
 4. DynamicAssetTable (only rendered when predictedAssets.length > 0; Health Status column +
-   summary counts banner, breach status column, RUL Est./PM Interval/Next PM Date/CI columns
-   (ML Est. and Deg. Proj. are popup-only, not table columns -- see Component Inventory), two
-   urgency banners (Critical in red, strictly Health-Status-driven; a broader "require scheduling"
-   orange banner that also fires on unresolved breaches or a Next PM Date within 30 days), and
-   per-asset Explain / Breach Alerts popups)
+   summary counts banner, breach status column, RUL Est./Decomm. Year/PM Interval/Next PM Date/CI
+   columns (ML Est. and Deg. Proj. are popup-only, not table columns -- see Component Inventory),
+   two urgency banners (Critical in red, strictly Health-Status-driven; a broader "require
+   scheduling" orange banner that also fires on unresolved breaches or a Next PM Date within 30
+   days), and per-asset Explain / Breach Alerts popups (the Explain popup includes a Lifecycle
+   section for RUL 2, when available))
 
 ### Component Inventory
 
@@ -1420,7 +1522,7 @@ When breach alerts requested:
 | AHPMatrix | AHPMatrix.jsx | Yes | NxN pairwise matrix with CR validation, N = criteria count from CriteriaConfig (3-7) |
 | UploadPanel | UploadPanel.jsx | Yes | File drop zone + a `ModeBanner` (green "Training mode detected" when `mode === "training"`, blue "Prediction mode -- using pre-trained model" showing `model_asset_type`/`feature_count` when `mode === "prediction"`) + Review & Approve Criteria screen (editable names/thresholds/penalties/default scores + PM interval card styled like the criteria cards, Reset + Approve) + Run/Re-run Analysis + Edit Criteria buttons once approved |
 | KnowledgeBasePanel | KnowledgeBasePanel.jsx | Yes | Collapsible RAG document manager (manuals/failure cases/criteria configs) + Trained Models list (`GET /upload/models` -- asset type/trained-at/feature count, fetched lazily on panel expand) + Approval Audit Log viewer; uses `useKnowledgeBase` internally |
-| DynamicAssetTable | DynamicAssetTable.jsx | Yes | Risk ranking sorted by health urgency (not raw risk factor), computed from `rul_days` -- the model-**selected** primary RUL (`rul/consensus_rul.py`'s `select_rul()`), not always the raw ML value. Health Status column/badge + summary counts banner + one primary RUL column instead of the three ML Est./Deg. Proj./RUL Est. columns an earlier version showed side by side: **RUL Est. (days)** (the primary/selected value, colored badge, a colored source-label badge below it -- "ML" blue / "Deg. Proj." purple / "Avg" green -- plus a consensus badge: green "✓ Models agree" / yellow "~ Similar" / red "⚠ Models diverge"), **PM Interval** (red if `recommendation === "shorten"`, green if `"maintain"`/`"extend"`, no arrow), **Next PM Date** (`"MMM DD"`, red within 30 days / yellow within 90 / green beyond), **CI** (`{rul_days - 182}`-`{rul_days + 182}` days, floored at 0 -- a fixed +-182-day/6-month band around the primary/selected `rul_days`, not the raw ML model's own `ci_low`/`ci_high` years -- see Key Conventions). No MTBF column in the table -- MTBF is popup-only. The raw `rul_ml_days`/`rul_physics_days` reference values are popup-only too (see "Model Details" below), not table columns. Breach status column + two urgency banners: red "immediate attention" strictly from `getHealthStatus()` (same as the Health Status column, so the two never disagree), and a broader orange "require scheduling" banner that also fires on an unresolved high/medium breach or a Next PM Date within 30 days -- an asset can appear in that banner while its own row still shows a Healthy/Monitor badge, which is intentional (breach/PM-date urgency is a different signal than RUL-health urgency), unlike the red banner's strict agreement guarantee. Explain popup adds, in order: a calibration note (raw vs. calibrated ML day count, when `rul_calibrated`), a collapsible **"Model Details"** section (collapsed by default behind a "Show model details ▼" / "Hide model details ▲" toggle button -- `ModelDetails` component, local `expanded` state, no persistence) showing "How this RUL was calculated": the primary estimate and source label, `rul_reason`, then the ML Model / Degradation Projection / Consensus / Physics confidence breakdown, Multi-Sensor Analysis, Maintenance Planning ("Historical MTBF" card with a static "requires 2+ failures" disclaimer, "Recommended MTBM" card), and a "Degradation Projection" section (per-sensor trend-to-threshold lines for sensors trending toward failure, the limiting sensor called out, an ML-vs-projection consensus line -- distinct from the Model Details section: this one is always visible when physics sensor projections exist, and lists per-sensor detail rather than the four summary numbers) -- plus Breach Alerts popups. All urgency coloring (Health Status badge, Risk Factor/RUL Est. pills, breach badge, MTBM recommendation, PM Interval/Next PM Date) is sourced from one `COLORS` constant (`critical`/`at_risk`/`monitor`/`healthy`/`neutral`) |
+| DynamicAssetTable | DynamicAssetTable.jsx | Yes | Risk ranking sorted by health urgency (not raw risk factor), computed from `rul_days` -- the model-**selected** primary RUL (`rul/consensus_rul.py`'s `select_rul()`), not always the raw ML value. Health Status column/badge + summary counts banner + one primary RUL column instead of the three ML Est./Deg. Proj./RUL Est. columns an earlier version showed side by side: **RUL Est. (days)** (the primary/selected value, colored badge, a colored source-label badge below it -- "ML" blue / "Deg. Proj." purple / "Avg" green -- plus a consensus badge: green "✓ Models agree" / yellow "~ Similar" / red "⚠ Models diverge"), **PM Interval** (red if `recommendation === "shorten"`, green if `"maintain"`/`"extend"`, no arrow), **Next PM Date** (`"MMM DD"`, red within 30 days / yellow within 90 / green beyond), **CI** (`{rul_days - 182}`-`{rul_days + 182}` days, floored at 0 -- a fixed +-182-day/6-month band around the primary/selected `rul_days`, not the raw ML model's own `ci_low`/`ci_high` years -- see Key Conventions), and **Decomm. Year** (RUL 2, optional per asset type -- `decommission_year` or `N/A` when `rul_2_available` is false, colored via `lifeRulColor(asset.rul_2_years)`: red `< 5` years remaining, yellow `5-10`, green `> 10`). No MTBF column in the table -- MTBF is popup-only. The raw `rul_ml_days`/`rul_physics_days` reference values are popup-only too (see "Model Details" below), not table columns. Breach status column + two urgency banners: red "immediate attention" strictly from `getHealthStatus()` (same as the Health Status column, so the two never disagree), and a broader orange "require scheduling" banner that also fires on an unresolved high/medium breach or a Next PM Date within 30 days -- an asset can appear in that banner while its own row still shows a Healthy/Monitor badge, which is intentional (breach/PM-date urgency is a different signal than RUL-health urgency), unlike the red banner's strict agreement guarantee. Explain popup adds, in order: a calibration note (raw vs. calibrated ML day count, when `rul_calibrated`), a collapsible **"Model Details"** section (collapsed by default behind a "Show model details ▼" / "Hide model details ▲" toggle button -- `ModelDetails` component, local `expanded` state, no persistence) showing "How this RUL was calculated": the primary estimate and source label, `rul_reason`, then the ML Model / Degradation Projection / Consensus / Physics confidence breakdown, Multi-Sensor Analysis, Maintenance Planning ("Historical MTBF" card with a static "requires 2+ failures" disclaimer, "Recommended MTBM" card), a **Lifecycle** section for RUL 2 (see ML RUL Pipeline > RUL 2 -- three cards: Life RUL, Life Consumed, Design Life; or a "model not available" message when `rul_2_available` is false), and a "Degradation Projection" section (per-sensor trend-to-threshold lines for sensors trending toward failure, the limiting sensor called out, an ML-vs-projection consensus line -- distinct from the Model Details section: this one is always visible when physics sensor projections exist, and lists per-sensor detail rather than the four summary numbers) -- plus Breach Alerts popups. All urgency coloring (Health Status badge, Risk Factor/RUL Est. pills, breach badge, MTBM recommendation, PM Interval/Next PM Date) is sourced from one `COLORS` constant (`critical`/`at_risk`/`monitor`/`healthy`/`neutral`) |
 | ManualScoreInputs | ManualScoreInputs.jsx | No (orphaned) | C1/C4 manual inputs component; uploaded mode edits `default_score` inline inside UploadPanel's review cards instead |
 | DataUpload | DataUpload.jsx | No (orphaned) | CSV/JSON upload for KSB pump data |
 | WeightDisplay | WeightDisplay.jsx | No (orphaned) | Recharts bar chart of criterion weights (default fleet) |
@@ -1555,6 +1657,12 @@ API_BASE_URL=http://localhost:8000
 | `DynamicAssetTable.jsx`'s `computeRulDays()` returns the model-**selected** primary RUL (`asset.rul_days`) everywhere -- sorting, Health Status, summary counts, both banners, the RUL Est. column -- not the raw ML value | `rul_days` is what `select_rul()` judged most appropriate (ML, physics, or their average); showing a different number in different places would contradict the whole point of having a single selected estimate |
 | `ML Est.` and `Deg. Proj.` are not table columns -- they only appear inside the popup's collapsible "Model Details" section (`rul_ml_days`/`rul_physics_days`), collapsed by default | Showing all three RUL numbers side by side in the table competed for attention with the single primary/selected `rul_days` value; one headline number plus an opt-in breakdown is clearer |
 | CI column and the popup's stats-row CI are computed client-side in `DynamicAssetTable.jsx` as a fixed `rul_days +- 182` days band (`computeCiDays()`), not from the backend's `ci_low`/`ci_high` (years, anchored to the raw ML prediction) | Keeps the displayed range consistent with whichever estimate (ML, physics, or their average) is actually shown as the headline RUL number, rather than a CI computed around a different (raw ML) value than what's displayed |
+| RUL 2 (decommissioning) is optional per asset type; `POST /upload/predict-all` wraps its lookup + prediction in `try/except` and sets `rul_2_available=False` on any failure | A missing or broken RUL 2 model must never block the RUL 1 result the rest of the endpoint already depends on |
+| `dynamic_feature_engineering.py`'s `use_age_features` flag (default `False`) appends real `operating_hours` + `pai_score` to the vector, for RUL 2 models only | Opposite of RUL 1's permanent `total_runtime_hours` exclusion -- decommissioning timing is directly tied to absolute age, unlike failure-RUL which is misled by it across assets of different expected lifetimes |
+| `rul/dynamic_train_cli.py` drops `True_RUL_2_Years` from `sensor_columns` (and `sensor_stats`) before RUL 1 training, if present | `data/upload_schema.py`'s generic RUL detector only excludes one RUL-like column; a file carrying both RUL 1 and RUL 2 targets would otherwise leak the RUL 2 label into RUL 1's feature vector |
+| `model_registry.list_models()`/`find_model()` exclude `*_rul2.pkl` bundles; `list_rul2_models()`/`find_rul2_model()` are the RUL-2-scoped mirror | Prevents RUL 1 and RUL 2 lookups from ever cross-matching the other pipeline's bundles, which have different (incompatible) feature vector lengths |
+| `predict_rul2()`'s `design_life` is read as `bundle.get("design_life", 25)` -- defaults to the KSB Calio spec but is bundle-overridable | Unlike the RUL 1 calibration anchor (`max_train_rul_years`), design life has no "observed in training data" source to derive from, so a sane default is the only option; kept overridable per asset type rather than hardcoded everywhere |
+| `predict_rul2_adjusted()` uses a `0.3` risk-adjustment multiplier (`rul_2_years * (1 - R_asset * 0.3)`), not RUL 1's full `1.0` | Decommissioning timelines are driven mostly by absolute age, not current sensor/risk state; a risk spike should nudge the estimate, not swing it the way it does for operational (failure) RUL |
 
 ---
 
@@ -1574,6 +1682,8 @@ API_BASE_URL=http://localhost:8000
 - Test RMSE displayed in **days** in UploadPanel's training summary (Math.round(test_rmse * 365)), same day-conversion convention as RUL; backend (`dynamic_train.py`) always returns years
 - Composite Stress Index is clamped to [0, 1] at the display layer (`Math.min(1, Math.max(0, value))`) before both the progress bar width and the text label -- the raw computed value can exceed 1
 - MTBF has no table column -- it's popup-only ("Historical MTBF" card), showing `N/A*` (not a number) whenever `mtbf_days` is `None`, with a static disclaimer note ("Requires 2+ observed failures to calculate...") rather than a footnote tied to a table asterisk
+- RUL 2 (decommissioning) is displayed in **years** directly in the UI, not converted to days like RUL 1 -- consistent with `predict_rul2()`'s native years output and the fact that a multi-year decommissioning horizon reads more naturally in years than days
+- Lifecycle color thresholds (Decomm. Year column and the popup's Life RUL card, both keyed off `rul_2_years`): red `< 5` years remaining, yellow `5-10`, green `> 10`. Life Consumed card: red `> 80%` life consumed, yellow `60-80%`, green `< 60%` -- both distinct scales from the RUL 1 day-based color thresholds above
 
 ---
 
@@ -1605,7 +1715,13 @@ python -m rul.dynamic_train_cli --file <path_to_historical_run_to_failure_data.x
 ```
 This is the only way to train a dynamic model from scratch; it is never triggered from the API or dashboard. The file must include a RUL target column. Saves to `rul/models/<sanitized_asset_type>.pkl`. A training-mode `POST /upload/analyze` call from the dashboard (uploading a file that *does* have a RUL column) accomplishes the same thing and saves to the same location.
 
-Neither `rul/dynamic_model.pkl` nor `rul/models/*.pkl` are run at startup -- dynamic models are only ever produced by the CLI above or a training-mode upload, and only ever loaded on demand by `POST /upload/predict-all` / `POST /upload/approve-criteria` via their `model_path`.
+Training a RUL 2 (decommissioning) model for an asset type -- entirely optional; `POST /upload/predict-all` works fine without one (`rul_2_available` just reads `false`):
+```
+python -m rul.dynamic_train_rul2_cli --file <path_to_historical_data_with_a_decommissioning_rul_column.xlsx>
+```
+Also never triggered from the API or dashboard -- there is no training-mode `/upload/analyze` equivalent for RUL 2. The file must include a decommissioning-RUL-like column (e.g. `True_RUL_2_Years`); see ML RUL Pipeline > RUL 2 for detection details. Saves to `rul/models/<sanitized_asset_type>_rul2.pkl`.
+
+Neither `rul/dynamic_model.pkl` nor `rul/models/*.pkl` (RUL 1 or RUL 2) are run at startup -- dynamic models are only ever produced by the CLIs above or a training-mode upload (RUL 1 only), and only ever loaded on demand by `POST /upload/predict-all` / `POST /upload/approve-criteria` via their `model_path` (RUL 1) or by `model_registry.find_rul2_model()` (RUL 2).
 
 The RAG knowledge base (`rag/chroma_db/`) is optional. If not built, the upload pipeline and explainer work identically to before -- RAG retrieval returns `retrieval_available=False` and no context is injected. To populate it, place PDF manuals in `docs/manuals/` and/or failure case markdown in `docs/failure_cases/`, then run `python -m rag.ingest`. Use `--rebuild` to force a full rebuild. CriteriaConfigs are stored automatically in `rag/stored_configs/` after each successful upload analysis.
 
@@ -1658,21 +1774,43 @@ across deploys, add a Railway volume mounted at /app/rul and /app/rag.
 
 ### Dockerfile
 
-A Dockerfile also exists at the project root, mirroring the same 
-pipeline as railway.toml's buildCommand (install deps, generate 
-telemetry/maintenance data, train the default fleet model, assemble 
-KSB_Full_Upload.xlsx, train a dynamic model) as a sequence of RUN 
-layers instead of one chained shell command. It is not what Railway 
+A Dockerfile also exists at the project root. It is not what Railway 
 currently builds from (railway.toml pins `builder = "nixpacks"`); it's 
 available for building/running the image directly with `docker build` 
 elsewhere, or if the project is later switched to Railway's Docker 
 builder.
 
-One difference from railway.toml: the Dockerfile's dynamic_train_cli 
-call passes `--config rul/ksb_criteria_config.json`, which skips 
-Claude inference entirely for that step (see rul/dynamic_train_cli.py 
-below) -- so, unlike the Railway build, `docker build` does not need 
-ANTHROPIC_API_KEY to complete this step. It does still need the key at 
-container **runtime** for the app's normal schema inference and 
-explanation endpoints, passed via `docker run -e ANTHROPIC_API_KEY=...` 
-or the equivalent in whatever orchestrator runs the image.
+**Unlike railway.toml's buildCommand, the Dockerfile trains nothing at 
+build time.** It only installs dependencies and runs `COPY . .`, which 
+brings in every pre-trained model artifact already committed to git: 
+`rul/model.pkl` (default fleet) and every `rul/models/<asset_type>.pkl` 
+/ `<asset_type>_rul2.pkl` bundle (e.g. 
+`rul/models/ksb_calio_sync_centrifugal_pump.pkl` and its 
+`..._rul2.pkl` counterpart). Building this image never calls 
+`data/generate_maintenance_log.py`, `rul.train`, 
+`rul.dynamic_train_cli`, or `rul.dynamic_train_rul2_cli` -- the 
+pre-trained models are committed to the repo and copied into the 
+container via `COPY . .`, so Railway does not need to retrain. 
+`docker build` does not need `ANTHROPIC_API_KEY` at all as a result; 
+the key is still needed at container **runtime** for the app's normal 
+schema inference and explanation endpoints, passed via 
+`docker run -e ANTHROPIC_API_KEY=...` or the equivalent in whatever 
+orchestrator runs the image.
+
+This is a deliberate divergence from railway.toml, whose buildCommand 
+still retrains the default fleet model and a KSB dynamic RUL 1 model 
+on every deploy (see above) -- the Dockerfile path instead assumes the 
+committed `.pkl` artifacts are already correct and current. If a model 
+needs retraining (e.g. after changing `rul/ceo_criteria_config.json`, 
+the training data, or the feature engineering), run `rul.train` / 
+`rul.dynamic_train_cli` / `rul.dynamic_train_rul2_cli` locally and 
+commit the resulting `.pkl` files, rather than expecting `docker build` 
+to regenerate them.
+
+Earlier versions of this Dockerfile did mirror railway.toml's full 
+pipeline (generate data, train the default fleet model, assemble 
+KSB_Full_Upload.xlsx, train a dynamic model) as a sequence of RUN 
+layers, and a later revision briefly ran `--config`-based 
+`dynamic_train_cli` / `dynamic_train_rul2_cli` calls against 
+`data/raw/training/CEO_Schema_100_Pumps_Training_v2.xlsx` instead. Both 
+were removed once the resulting models were committed to git directly.

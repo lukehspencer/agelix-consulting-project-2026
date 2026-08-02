@@ -16,6 +16,8 @@ An upload only ever does one of two things, never both: **training** (the file h
 
 The RUL model for uploaded assets also looks beyond single-sensor thresholds: it tracks trend direction and cross-sensor correlation over a rolling window, and separately runs deterministic threshold-breach detection on every scoring pass, with Claude only invoked on demand to explain a breach that has already been found. It also produces simplified MTBF (mean time between failures) and MTBM (recommended maintenance interval) estimates, plus a basic replace-vs-maintain economic comparison -- all deterministic approximations, not full statistical reliability models.
 
+An asset type can optionally also have a second, independent **RUL 2** model that predicts time-to-decommissioning rather than time-to-failure -- see Training a RUL 2 (Decommissioning) Model below. It's entirely additive: uploads and predictions work identically whether or not a RUL 2 model exists for that asset type.
+
 Built as an internship project for Agelix Consulting to extend their asset lifecycle management platform, Assets Maestro. The default asset class is the KSB Calio 30-40 glandless circulator pump.
 
 ---
@@ -182,6 +184,19 @@ python -m rul.dynamic_train_cli --file <path_to_historical_run_to_failure_data.x
 This is the only way to train a dynamic model from scratch outside of a training-mode dashboard upload -- it is never invoked automatically by the API or frontend. The file must include a RUL target column; the resulting model is saved to `rul/models/<asset_type>.pkl` just like a training-mode upload, and still needs its criteria approved once in the dashboard (during a subsequent prediction-mode upload) before predictions can run against it.
 
 `--config` loads the CriteriaConfig JSON directly instead of calling Claude, and is not re-validated against the file's detected schema. Only point it at a config whose `column_roles.rul_target` is a real column name -- a config saved from a *prediction-mode* run has `rul_target` set to `null` by design, and training will fail against one of those even if the training file itself has a valid RUL column.
+
+### Training a RUL 2 (Decommissioning) Model
+
+Separate from the RUL 1 pipeline above, an asset type can optionally have a second, independent model that predicts time-to-decommissioning instead of time-to-failure. It's entirely optional -- the dashboard works fine without one; a matching model just isn't found, and the risk table's Decomm. Year column and the explanation popup's Lifecycle section degrade gracefully to "not available."
+
+```bash
+python -m rul.dynamic_train_rul2_cli --file <path_to_historical_data_with_a_decommissioning_rul_column.xlsx>
+
+# Or, with a pre-built CriteriaConfig, same as the RUL 1 CLI:
+python -m rul.dynamic_train_rul2_cli --file <path_to_historical_data.xlsx> --config <path_to_criteria_config.json>
+```
+
+The file must include a decommissioning-RUL-like column (e.g. `True_RUL_2_Years`, detected by keywords like "rul_2", "decommission", or "eol") -- and this column can coexist in the same file as a regular RUL 1 target column (e.g. `True_RUL_Days`); each training script finds its own target independently and neither leaks the other's column into its feature set. Unlike RUL 1's feature vector, the RUL 2 model's vector includes the asset's actual operating hours and a physical-age-index sensor reading when available, since absolute age is directly relevant to a decommissioning timeline (the opposite of RUL 1, which deliberately excludes cumulative runtime hours to avoid misleading predictions across assets of different expected lifetimes). The resulting model is saved to `rul/models/<asset_type>_rul2.pkl` -- never called from the API or frontend, same as the RUL 1 CLI.
 
 ### RUL Prediction Calibration (Dynamic Assets)
 
@@ -387,8 +402,12 @@ agelix-consulting-project-2026/
 |   +-- consensus_rul.py           # select_rul() -- picks ML, physics, or their average as primary
 |   +-- dynamic_*.py               # Dynamic equivalents for uploaded assets
 |   +-- dynamic_train_cli.py       # Standalone CLI: python -m rul.dynamic_train_cli --file <path>
-|   +-- model_registry.py          # list_models() / find_model() / get_model_bundle()
-|   +-- models/                    # One <asset_type>.pkl per trained dynamic asset type
+|   +-- dynamic_train_rul2_cli.py  # Standalone CLI for the optional RUL 2 (decommissioning) model
+|   +-- dynamic_ml_rul2_model.py   # predict_rul2() / predict_rul2_adjusted()
+|   +-- model_registry.py          # list_models()/find_model() (RUL 1) + list_rul2_models()/
+|   |                              # find_rul2_model() (RUL 2) over rul/models/
+|   +-- models/                    # One <asset_type>.pkl (RUL 1) and/or <asset_type>_rul2.pkl
+|   |                              # (RUL 2) per trained dynamic asset type
 |   +-- api.py                     # /rul/* endpoints
 +-- data/
 |   +-- telemetry_aggregator.py    # Default fleet data source
